@@ -1,0 +1,16 @@
+WP24-J Retry Exhaustion patch bundle
+===================================
+
+Files:
+- main/modbus_self_test.c: adds extended test selection 5 / WP24-J
+- main/Kconfig.projbuild: extends selector range and help text
+- sdkconfig.wp24_j: dedicated test config
+- tools/build_wp24_j.ps1: reconfigure, build and flash COM11
+- tools/myems_wp24_j_retry_exhaustion_test.py: host runner + simulator setup
+- tools/WP24_J_README.md: instructions
+- WP24_J_SOURCE.patch: unified source diff for the two firmware source files
+
+This patch has been syntax-checked for the Python runner. It has NOT been built
+with ESP-IDF or run on the hardware in this environment. Run the provided
+build/runner on the user's ESP-IDF workstation and review results before
+considering the test validated.

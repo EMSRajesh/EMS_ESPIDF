@@ -1,0 +1,284 @@
+--- a/components/modbus_rtu_master/src/modbus_rtu_master.c
++++ b/components/modbus_rtu_master/src/modbus_rtu_master.c
+@@ -20,12 +20,14 @@
+     QueueHandle_t request_queue, completion_queue;
+     SemaphoreHandle_t completion_slots; /* One token reserved per accepted, unconsumed request. */
+     SemaphoreHandle_t cancel_done_sem;
++    SemaphoreHandle_t api_lock; /* Serializes admission against shutdown transition. */
++    modbus_master_lifecycle_state_t lifecycle_state;
+     volatile bool cancel_pending_requested;
+     volatile bool cancel_api_busy;
+     uint32_t cancelled_last_count;
+     TaskHandle_t task;
+     SemaphoreHandle_t stopped_sem;
+-    volatile bool stopping;
++    bool stopping; /* Accessed atomically; API admission is serialized by api_lock. */
+     modbus_master_stats_t stats;
+ };
+ 
+@@ -54,6 +56,8 @@
+ static StaticSemaphore_t s_master_stopped_sem_cb;
+ static StaticSemaphore_t s_completion_slots_sem_cb;
+ static StaticSemaphore_t s_cancel_done_sem_cb;
++static StaticSemaphore_t s_api_lock_sem_cb;
++static SemaphoreHandle_t s_api_lock; /* Static-lifetime lock; never deleted between runs. */
+ static StaticTask_t s_master_task_tcb;
+ static StackType_t s_master_task_stack[MASTER_TASK_STACK_WORDS];
+ static bool s_master_in_use;
+@@ -203,7 +207,7 @@
+         !t->request.allow_write_retries) max = 0U;
+ 
+     t->failed_status = status;
+-    t->retry_after_recovery = (t->retries_used < max) && !m->stopping;
++    t->retry_after_recovery = (t->retries_used < max) && !master_is_stopping(m);
+     if (t->retry_after_recovery) t->retries_used++;
+     t->recovery_guard_until_us = esp_timer_get_time() +
+         (int64_t)LATE_RESPONSE_GUARD_MS * 1000LL;
+@@ -280,7 +284,7 @@
+         }
+         if (state != RS485_RECOVERY_IDLE) return;
+ 
+-        if (t->retry_after_recovery && !m->stopping) {
++        if (t->retry_after_recovery && !master_is_stopping(m)) {
+             t->retry_at_us = now_us + (int64_t)RETRY_QUIET_TIME_MS * 1000LL;
+             t->state = TXN_RETRY_DELAY;
+             ESP_LOGI(TAG, "recovery complete; retry scheduled after %u ms",
+@@ -416,6 +420,27 @@
+     }
+ }
+ 
++static bool master_is_stopping(const struct modbus_master *m)
++{
++    return __atomic_load_n(&m->stopping, __ATOMIC_ACQUIRE);
++}
++
++static void master_set_stopping(struct modbus_master *m, bool stopping)
++{
++    __atomic_store_n(&m->stopping, stopping, __ATOMIC_RELEASE);
++}
++
++static esp_err_t master_api_lock(struct modbus_master *m, TickType_t wait)
++{
++    if (!m || !m->api_lock) return ESP_ERR_INVALID_STATE;
++    return xSemaphoreTake(m->api_lock, wait) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
++}
++
++static void master_api_unlock(struct modbus_master *m)
++{
++    (void)xSemaphoreGive(m->api_lock);
++}
++
+ static void master_task(void *arg) {
+     struct modbus_master *m=arg;
+     transaction_t *t = &s_master_transaction;
+@@ -424,7 +449,7 @@
+         ? m->config.task_stack_size : MASTER_TASK_STACK_SIZE_BYTES;
+     ems_stack_diag_t stack_diag;
+     ems_stack_diag_init(&stack_diag, "modbus_master", allocated_stack_bytes);
+-    while(!m->stopping){
++    while(!master_is_stopping(m)){
+         ems_stack_diag_sample(&stack_diag, TAG);
+         service_cancel_pending(m, t);
+         if(!t->active && t->state != TXN_BUS_UNAVAILABLE){if(xQueueReceive(m->request_queue,&s_queued_workspace,0)==pdTRUE){t->active=true;t->request=s_queued_workspace.request;t->state=TXN_IDLE;t->retries_used=0;begin_attempt(m,t);}}
+@@ -466,9 +491,23 @@
+         return ESP_ERR_INVALID_ARG;
+     }
+     *out = NULL;
+-    if (s_master_in_use) return ESP_ERR_INVALID_STATE;
++
++    /* The static mutex is retained for the lifetime of the process so a stale
++       handle cannot race mutex destruction during a later stop/deinit phase. */
++    if (s_api_lock == NULL) {
++        s_api_lock = xSemaphoreCreateMutexStatic(&s_api_lock_sem_cb);
++        if (s_api_lock == NULL) return ESP_ERR_NO_MEM;
++    }
++    if (xSemaphoreTake(s_api_lock, portMAX_DELAY) != pdTRUE) return ESP_FAIL;
++    if (s_master_in_use) {
++        (void)xSemaphoreGive(s_api_lock);
++        return ESP_ERR_INVALID_STATE;
++    }
++
+     struct modbus_master *m = &s_master;
+     memset(m, 0, sizeof(*m));
++    m->api_lock = s_api_lock;
++    m->lifecycle_state = MODBUS_MASTER_STARTING;
+     memset(&s_master_transaction, 0, sizeof(s_master_transaction));
+     memset(&s_publish_workspace, 0, sizeof(s_publish_workspace));
+     memset(&s_decode_workspace, 0, sizeof(s_decode_workspace));
+@@ -492,6 +531,7 @@
+         if (m->completion_slots) vSemaphoreDelete(m->completion_slots);
+         if (m->cancel_done_sem) vSemaphoreDelete(m->cancel_done_sem);
+         memset(m, 0, sizeof(*m));
++        (void)xSemaphoreGive(s_api_lock);
+         return ESP_ERR_NO_MEM;
+     }
+     uint32_t stack_size_bytes = c->task_stack_size != 0U
+@@ -506,6 +546,7 @@
+         vSemaphoreDelete(m->completion_slots);
+         vSemaphoreDelete(m->cancel_done_sem);
+         memset(m, 0, sizeof(*m));
++        (void)xSemaphoreGive(s_api_lock);
+         return ESP_ERR_INVALID_ARG;
+     }
+     m->task = xTaskCreateStatic(master_task, "modbus_master", stack_depth_words,
+@@ -517,32 +558,45 @@
+         vSemaphoreDelete(m->completion_slots);
+         vSemaphoreDelete(m->cancel_done_sem);
+         memset(m, 0, sizeof(*m));
++        (void)xSemaphoreGive(s_api_lock);
+         return ESP_ERR_NO_MEM;
+     }
++    m->api_lock = s_api_lock;
++    m->lifecycle_state = MODBUS_MASTER_RUNNING;
+     s_master_in_use = true;
+     *out = m;
++    (void)xSemaphoreGive(s_api_lock);
+     return ESP_OK;
+ }
++
+ esp_err_t modbus_master_submit(modbus_master_handle_t h, const modbus_request_t *r)
+ {
+     if (!h || !request_valid(r)) return ESP_ERR_INVALID_ARG;
+-    if (h->stopping) return ESP_ERR_INVALID_STATE;
+-
+-    /* Reserve completion capacity before accepting the request. The reservation
+-       remains held while queued, active, retrying, and after publication until
+-       the consumer removes the terminal result. */
++    esp_err_t lock_err = master_api_lock(h, 0);
++    if (lock_err != ESP_OK) return lock_err;
++    if (h->lifecycle_state != MODBUS_MASTER_RUNNING) {
++        master_api_unlock(h);
++        return ESP_ERR_INVALID_STATE;
++    }
++
++    /* Admission lock covers state check, completion reservation and enqueue.
++       Therefore shutdown cannot transition to QUIESCING between acceptance
++       validation and queue insertion. */
+     if (xSemaphoreTake(h->completion_slots, 0) != pdTRUE) {
+         master_stat_increment(&h->stats.completion_backpressure_rejections);
++        master_api_unlock(h);
+         return ESP_ERR_TIMEOUT;
+     }
+ 
+     queued_request_t q = {.request = *r};
+     if (xQueueSend(h->request_queue, &q, 0) != pdTRUE) {
+         (void)xSemaphoreGive(h->completion_slots);
++        master_api_unlock(h);
+         return ESP_ERR_TIMEOUT;
+     }
+ 
+     master_stat_increment(&h->stats.requests_accepted);
++    master_api_unlock(h);
+     return ESP_OK;
+ }
+ 
+@@ -557,15 +611,21 @@
+     if (!h) {
+         return ESP_ERR_INVALID_ARG;
+     }
+-    if (h->stopping) {
++    esp_err_t lock_err = master_api_lock(h, 0);
++    if (lock_err != ESP_OK) return lock_err;
++    if (h->lifecycle_state != MODBUS_MASTER_RUNNING) {
++        master_api_unlock(h);
+         return ESP_ERR_INVALID_STATE;
+     }
+ 
+     bool expected = false;
+     if (!__atomic_compare_exchange_n(&h->cancel_api_busy, &expected, true,
+                                      false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
++        master_api_unlock(h);
+         return ESP_ERR_INVALID_STATE;
+     }
++    /* Keep the admission lock until the cancellation acknowledgement arrives.
++       Shutdown therefore cannot overlap this runtime cancellation operation. */
+ 
+     /* Remove an acknowledgement left by a caller that previously timed out. */
+     (void)xSemaphoreTake(h->cancel_done_sem, 0);
+@@ -573,6 +633,7 @@
+ 
+     if (xSemaphoreTake(h->cancel_done_sem, timeout_ticks) != pdTRUE) {
+         __atomic_store_n(&h->cancel_api_busy, false, __ATOMIC_RELEASE);
++        master_api_unlock(h);
+         return ESP_ERR_TIMEOUT;
+     }
+ 
+@@ -581,6 +642,7 @@
+         *cancelled_count = count;
+     }
+     __atomic_store_n(&h->cancel_api_busy, false, __ATOMIC_RELEASE);
++    master_api_unlock(h);
+     return ESP_OK;
+ }
+ 
+@@ -620,4 +682,69 @@
+ #undef LOAD_MASTER_STAT
+     return ESP_OK;
+ }
+-esp_err_t modbus_master_stop(modbus_master_handle_t h){if(!h)return ESP_ERR_INVALID_ARG;h->stopping=true;if(xSemaphoreTake(h->stopped_sem,pdMS_TO_TICKS(2000))!=pdTRUE)return ESP_ERR_TIMEOUT;vTaskSuspend(h->task);vTaskDelete(h->task);vQueueDelete(h->request_queue);vQueueDelete(h->completion_queue);vSemaphoreDelete(h->stopped_sem);vSemaphoreDelete(h->completion_slots);vSemaphoreDelete(h->cancel_done_sem);memset(h,0,sizeof(*h));s_master_in_use=false;return ESP_OK;}
++esp_err_t modbus_master_stop(modbus_master_handle_t h)
++{
++    if (!h) return ESP_ERR_INVALID_ARG;
++    esp_err_t lock_err = master_api_lock(h, portMAX_DELAY);
++    if (lock_err != ESP_OK) return lock_err;
++    if (h->lifecycle_state == MODBUS_MASTER_DRAINING) {
++        master_api_unlock(h);
++        return ESP_OK;
++    }
++    if (h->lifecycle_state != MODBUS_MASTER_RUNNING &&
++        h->lifecycle_state != MODBUS_MASTER_QUIESCING &&
++        h->lifecycle_state != MODBUS_MASTER_FAILED) {
++        master_api_unlock(h);
++        return ESP_ERR_INVALID_STATE;
++    }
++    h->lifecycle_state = MODBUS_MASTER_QUIESCING;
++    master_set_stopping(h, true);
++    master_api_unlock(h);
++
++    if (xSemaphoreTake(h->stopped_sem, pdMS_TO_TICKS(2000)) != pdTRUE) {
++        /* Keep all resources intact: the task may still be using them. A later
++           stop call may retry waiting for the same task-exit acknowledgement. */
++        if (master_api_lock(h, portMAX_DELAY) == ESP_OK) {
++            h->lifecycle_state = MODBUS_MASTER_FAILED;
++            master_api_unlock(h);
++        }
++        return ESP_ERR_TIMEOUT;
++    }
++
++    /* Phase 1 (Option A): stop the producer, but preserve the completion queue
++       and its reservation semaphore for the application to drain. Deinit and
++       resource destruction are deliberately deferred to WP2.5-B3/B4. */
++    if (h->task) {
++        vTaskDelete(h->task);
++        h->task = NULL;
++    }
++    if (h->request_queue) {
++        vQueueDelete(h->request_queue);
++        h->request_queue = NULL;
++    }
++    if (h->stopped_sem) {
++        vSemaphoreDelete(h->stopped_sem);
++        h->stopped_sem = NULL;
++    }
++    if (h->cancel_done_sem) {
++        vSemaphoreDelete(h->cancel_done_sem);
++        h->cancel_done_sem = NULL;
++    }
++    if (master_api_lock(h, portMAX_DELAY) == ESP_OK) {
++        h->lifecycle_state = MODBUS_MASTER_DRAINING;
++        master_api_unlock(h);
++    }
++    return ESP_OK;
++}
++
++esp_err_t modbus_master_get_lifecycle_state(modbus_master_handle_t h,
++                                            modbus_master_lifecycle_state_t *state)
++{
++    if (!h || !state) return ESP_ERR_INVALID_ARG;
++    esp_err_t lock_err = master_api_lock(h, portMAX_DELAY);
++    if (lock_err != ESP_OK) return lock_err;
++    *state = h->lifecycle_state;
++    master_api_unlock(h);
++    return ESP_OK;
++}
++

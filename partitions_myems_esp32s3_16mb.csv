@@ -1,0 +1,10 @@
+# Name, Type, SubType, Offset, Size, Flags
+nvs,data,nvs,0x9000,16K,
+otadata,data,ota,0xd000,8K,
+phy_init,data,phy,0xf000,4K,
+ota_0,app,ota_0,0x10000,4M,
+ota_1,app,ota_1,0x410000,4M,
+ems_cfg,data,64,0x810000,512K,
+ems_snap,data,65,0x890000,1M,
+ems_logs,data,66,0x990000,2M,
+coredump,data,coredump,0xb90000,1M,

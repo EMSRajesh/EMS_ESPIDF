@@ -1,0 +1,136 @@
+--- a/main/Kconfig.projbuild
++++ b/main/Kconfig.projbuild
+@@ -35,3 +35,14 @@
+         cancelled before a response is expected.
+ 
+ endmenu
++
++
++config MYEMS_WP25_B2_TEST
++    bool "Run WP2.5-B2 active shutdown and completion-drain test"
++    depends on MYEMS_MODBUS_SELF_TEST
++    default n
++    help
++        Tests stop with one active and two queued requests, terminal cancellation
++        completions, DRAINING state, post-stop completion draining, idempotent
++        repeated stop, and rejection of new submissions. Disconnect the RS485
++        simulator and never connect a live meter during this test.
+--- a/main/modbus_self_test.c
++++ b/main/modbus_self_test.c
+@@ -294,6 +294,116 @@
+     ESP_LOGI(TAG, "MODE=SELF_TEST; target slave=1; ensure simulator is running on COM12");
+     ESP_LOGI(TAG, "Self-test performs writes to test-slave registers/coils 1..8 only.");
+ 
++
++#if CONFIG_MYEMS_WP25_B2_TEST
++    /*
++     * WP2.5-B2 initial lifecycle test.
++     * Disconnect the RS485 simulator: the active request must remain pending
++     * until stop cancels it. The other two accepted requests must remain queued.
++     */
++    modbus_request_t stop_req = {0};
++    modbus_result_t stop_result = {0};
++    uint32_t expected_ids[3] = {0U, 0U, 0U};
++    bool ids_seen[3] = {false, false, false};
++    unsigned cancelled = 0U;
++    bool pass = true;
++
++    stop_req.slave_addr = 1U;
++    stop_req.function_code = 3U;
++    stop_req.start_register = 0U;
++    stop_req.register_count = 1U;
++    stop_req.timeout_ms = 5000U;
++    stop_req.max_retries = 0U;
++
++    for (unsigned i = 0U; i < 3U; i++) {
++        stop_req.request_id = ++s_request_id;
++        if (i == 1U) {
++            /* Give request 0 time to become the active transaction. */
++            vTaskDelay(pdMS_TO_TICKS(100U));
++        }
++        err = modbus_master_submit(master, &stop_req);
++        if (err != ESP_OK) {
++            ESP_LOGE(TAG, "WP25-B2 submit[%u] failed: %s",
++                     i, esp_err_to_name(err));
++            return ESP_FAIL;
++        }
++        expected_ids[i] = stop_req.request_id;
++    }
++
++    err = modbus_master_stop(master);
++    if (err != ESP_OK) {
++        ESP_LOGE(TAG, "WP25-B2 stop failed: %s", esp_err_to_name(err));
++        return err;
++    }
++
++    modbus_master_lifecycle_state_t lifecycle = MODBUS_MASTER_FAILED;
++    err = modbus_master_get_lifecycle_state(master, &lifecycle);
++    if (err != ESP_OK || lifecycle != MODBUS_MASTER_DRAINING) {
++        ESP_LOGE(TAG, "WP25-B2 expected DRAINING, err=%s state=%d",
++                 esp_err_to_name(err), (int)lifecycle);
++        pass = false;
++    }
++
++    /* Completion queue must remain readable after stop(). */
++    for (unsigned i = 0U; i < 3U; i++) {
++        err = modbus_master_get_completion(master, &stop_result,
++                                           pdMS_TO_TICKS(1000U));
++        if (err != ESP_OK) {
++            ESP_LOGE(TAG, "WP25-B2 completion[%u] missing: %s",
++                     i, esp_err_to_name(err));
++            pass = false;
++            break;
++        }
++
++        bool matched = false;
++        for (unsigned j = 0U; j < 3U; j++) {
++            if (stop_result.request_id == expected_ids[j] && !ids_seen[j]) {
++                ids_seen[j] = true;
++                matched = true;
++                break;
++            }
++        }
++        if (!matched || stop_result.status != MODBUS_RESULT_CANCELLED) {
++            ESP_LOGE(TAG, "WP25-B2 unexpected completion id=%lu status=%d",
++                     (unsigned long)stop_result.request_id,
++                     (int)stop_result.status);
++            pass = false;
++        } else {
++            cancelled++;
++        }
++    }
++
++    /* A second stop in DRAINING must be harmless and idempotent. */
++    esp_err_t second_stop = modbus_master_stop(master);
++    if (second_stop != ESP_OK) {
++        ESP_LOGE(TAG, "WP25-B2 second stop failed: %s",
++                 esp_err_to_name(second_stop));
++        pass = false;
++    }
++
++    /* Admission must remain closed once stop has entered DRAINING. */
++    stop_req.request_id = ++s_request_id;
++    esp_err_t submit_after_stop = modbus_master_submit(master, &stop_req);
++    if (submit_after_stop != ESP_ERR_INVALID_STATE) {
++        ESP_LOGE(TAG, "WP25-B2 submit after stop returned %s",
++                 esp_err_to_name(submit_after_stop));
++        pass = false;
++    }
++
++    pass = pass && ids_seen[0] && ids_seen[1] && ids_seen[2] &&
++           cancelled == 3U && second_stop == ESP_OK &&
++           submit_after_stop == ESP_ERR_INVALID_STATE;
++
++    ESP_LOGI(TAG,
++             "WP25_B2_SUMMARY: %s accepted=3 cancelled=%u "
++             "draining=%u second_stop=%s post_stop_submit=%s",
++             pass ? "PASS" : "FAIL", cancelled,
++             lifecycle == MODBUS_MASTER_DRAINING ? 1U : 0U,
++             esp_err_to_name(second_stop),
++             esp_err_to_name(submit_after_stop));
++    return pass ? ESP_OK : ESP_FAIL;
++#endif
++
+ #if CONFIG_MYEMS_WP25_D_TEST
+     /*
+      * WP2.5-D isolated test: no simulator should be connected. Submit one

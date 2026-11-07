@@ -1,0 +1,73 @@
+--- a/main/modbus_self_test.c
++++ b/main/modbus_self_test.c
+@@ -71,13 +71,17 @@
+     else { ESP_LOGI(TAG, "%s: PASS", name); } \
+ } while (0)
+ 
+-#if CONFIG_MYEMS_WP24_FAULT_INJECTION && CONFIG_MYEMS_WP24_EXTENDED_TEST > 0 && CONFIG_MYEMS_WP24_EXTENDED_TEST < 4
++#if CONFIG_MYEMS_WP24_FAULT_INJECTION && CONFIG_MYEMS_WP24_EXTENDED_TEST > 0 && CONFIG_MYEMS_WP24_EXTENDED_TEST <= 5
+ static esp_err_t run_wp24_extended_test(modbus_master_handle_t master,
+                                         rs485_handle_t transport)
+ {
+     modbus_request_t request = {0};
+     modbus_result_t result = {0};
+     esp_err_t err;
++#if CONFIG_MYEMS_WP24_EXTENDED_TEST == 5
++    rs485_stats_t wp24_j_before = {0}, wp24_j_after = {0};
++    if (rs485_get_stats(transport, &wp24_j_before) != ESP_OK) return ESP_FAIL;
++#endif
+     request.request_id = ++s_request_id;
+     request.slave_addr = 1U;
+     request.function_code = 3U;
+@@ -94,6 +98,9 @@
+     request.max_retries = 0U;
+     ESP_LOGI(TAG, "WP24-I recovery-timeout test: forcing recovery activity; bus must remain unavailable");
+     ESP_ERROR_CHECK(rs485_test_force_recovery_activity(transport, true));
++#elif CONFIG_MYEMS_WP24_EXTENDED_TEST == 5
++    request.max_retries = 1U;
++    ESP_LOGI(TAG, "WP24-J retry exhaustion: simulator must drop both FC03/start=100 attempts");
+ #else
+ #error "Unsupported MYEMS_WP24_EXTENDED_TEST selection"
+ #endif
+@@ -152,6 +159,23 @@
+              (unsigned long)transport_stats.recovery_timeout_count, (int)recovery_state);
+     ESP_LOGE(TAG, "WP24-I TX probe result=%s (expected ESP_ERR_INVALID_STATE)",
+              esp_err_to_name(blocked_tx_result));
++#endif
++#elif CONFIG_MYEMS_WP24_EXTENDED_TEST == 5
++    /* The simulator drops both attempts at FC03/start=100. With max_retries=1,
++     * one retry is permitted; the transaction must terminate as TIMEOUT. */
++    if (rs485_get_stats(transport, &wp24_j_after) == ESP_OK &&
++        err == ESP_OK && result.request_id == request.request_id &&
++        result.status == MODBUS_RESULT_TIMEOUT && result.retry_count == 1U &&
++        (wp24_j_after.recovery_success_count - wp24_j_before.recovery_success_count) >= 2U) {
++        ESP_LOGI(TAG, "WP24-J PASS: attempts=2 retries=1 final_status=TIMEOUT; recovery completed twice");
++        ESP_LOGI(TAG, "WP24_EXTENDED_SUMMARY: PASS mode=RETRY_EXHAUSTION");
++        return ESP_OK;
++    }
++    ESP_LOGE(TAG, "WP24-J FAIL: wait=%s id=%lu expected=%lu status=%d retries=%u recovery_delta=%lu",
++             esp_err_to_name(err), (unsigned long)result.request_id,
++             (unsigned long)request.request_id, (int)result.status,
++             result.retry_count,
++             (unsigned long)(wp24_j_after.recovery_success_count - wp24_j_before.recovery_success_count));
+ #endif
+     ESP_LOGE(TAG, "WP24_EXTENDED_SUMMARY: FAIL mode=%d", CONFIG_MYEMS_WP24_EXTENDED_TEST);
+     return ESP_FAIL;
+--- a/main/Kconfig.projbuild
++++ b/main/Kconfig.projbuild
+@@ -17,12 +17,12 @@
+         Keep disabled in every production configuration.
+ 
+ config MYEMS_WP24_EXTENDED_TEST
+-    int "WP2.4 test selection (0=off, 1=retry, 2=RX loss, 3=recovery timeout, 4=all A-I)"
++    int "WP2.4 test selection (0=off, 1=retry, 2=RX loss, 3=recovery timeout, 4=all A-I, 5=retry exhaustion)"
+     depends on MYEMS_MODBUS_SELF_TEST && MYEMS_WP24_FAULT_INJECTION
+-    range 0 4
++    range 0 5
+     default 0
+     help
+-        Select one extended test or the complete A-I campaign for this dedicated self-test firmware build.
++        Select one extended test, WP24-J retry exhaustion, or the complete A-I campaign for this dedicated self-test firmware build.
+         These tests require the USB-RS485 simulator, never a live meter.
+ 
+ 

@@ -1,0 +1,16 @@
+WP2.5-E stack instrumentation patch
+
+Modified:
+- components/ems_stack_diag/CMakeLists.txt (new)
+- components/ems_stack_diag/include/ems_stack_diag.h (new)
+- components/rs485_transport/CMakeLists.txt
+- components/rs485_transport/src/rs485_transport.c
+- components/modbus_rtu_master/CMakeLists.txt
+- components/modbus_rtu_master/src/modbus_rtu_master.c
+- main/CMakeLists.txt
+- main/app_main.c
+- main/ems_acquisition.c
+- main/ems_poll_scheduler.c
+- README_WP25E_STACK_INSTRUMENTATION.md (new)
+
+No protocol or transaction policy changes intended.

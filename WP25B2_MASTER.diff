@@ -1,0 +1,158 @@
+--- a/components/modbus_rtu_master/src/modbus_rtu_master.c
++++ b/components/modbus_rtu_master/src/modbus_rtu_master.c
+@@ -450,21 +450,87 @@
+         ? m->config.task_stack_size : MASTER_TASK_STACK_SIZE_BYTES;
+     ems_stack_diag_t stack_diag;
+     ems_stack_diag_init(&stack_diag, "modbus_master", allocated_stack_bytes);
+-    while(!master_is_stopping(m)){
++    for (;;) {
++        /* Shutdown has priority over all normal transaction processing. */
++        if (master_is_stopping(m)) {
++            break;
++        }
++
+         ems_stack_diag_sample(&stack_diag, TAG);
+         service_cancel_pending(m, t);
+-        if(!t->active && t->state != TXN_BUS_UNAVAILABLE){if(xQueueReceive(m->request_queue,&s_queued_workspace,0)==pdTRUE){t->active=true;t->request=s_queued_workspace.request;t->state=TXN_IDLE;t->retries_used=0;begin_attempt(m,t);}}
+-        if(rs485_get_event(m->config.transport,&s_event_workspace,pdMS_TO_TICKS(MASTER_LOOP_WAIT_MS))==ESP_OK){transport_event(m,t,&s_event_workspace);while(rs485_get_event(m->config.transport,&s_event_workspace,0)==ESP_OK)transport_event(m,t,&s_event_workspace);}
++
++        /* Runtime cancellation and stop are serialized by api_lock. */
++        if (master_is_stopping(m)) {
++            break;
++        }
++
++        if (!t->active && t->state != TXN_BUS_UNAVAILABLE) {
++            if (xQueueReceive(m->request_queue, &s_queued_workspace, 0) == pdTRUE) {
++                t->active = true;
++                t->request = s_queued_workspace.request;
++                t->state = TXN_IDLE;
++                t->retries_used = 0U;
++
++                /* A request dequeued concurrently with stop is cancelled below,
++                 * not transmitted after admission has closed. */
++                if (master_is_stopping(m)) {
++                    break;
++                }
++                begin_attempt(m, t);
++            }
++        }
++
++        if (master_is_stopping(m)) {
++            break;
++        }
++
++        if (rs485_get_event(m->config.transport, &s_event_workspace,
++                            pdMS_TO_TICKS(MASTER_LOOP_WAIT_MS)) == ESP_OK) {
++            /* Do not decode a response or publish success after shutdown wins. */
++            if (master_is_stopping(m)) {
++                break;
++            }
++            transport_event(m, t, &s_event_workspace);
++
++            while (!master_is_stopping(m) &&
++                   rs485_get_event(m->config.transport, &s_event_workspace, 0) == ESP_OK) {
++                if (master_is_stopping(m)) {
++                    break;
++                }
++                transport_event(m, t, &s_event_workspace);
++            }
++        }
++
++        if (master_is_stopping(m)) {
++            break;
++        }
++
+         service_cancel_pending(m, t);
+-        int64_t now=esp_timer_get_time();
++        if (master_is_stopping(m)) {
++            break;
++        }
++
++        int64_t now = esp_timer_get_time();
+         if (t->active && (t->state == TXN_RECOVERY ||
+-                         t->state == TXN_WAIT_RECOVERY_RELEASE)) {
++                          t->state == TXN_WAIT_RECOVERY_RELEASE)) {
+             service_recovery(m, t, now);
+         }
+-        if(t->active&&t->state==TXN_WAIT_TX_DONE&&now>=t->deadline_us)finish_or_retry(m,t,MODBUS_RESULT_TRANSPORT_ERROR);
+-        else if(t->active&&t->state==TXN_WAIT_RESPONSE&&now>=t->deadline_us)finish_or_retry(m,t,MODBUS_RESULT_TIMEOUT);
+-        else if(t->active&&t->state==TXN_RETRY_DELAY&&now>=t->retry_at_us)begin_attempt(m,t);
+-        /* Sample after event/decode/recovery work, not only at loop entry. */
++
++        /* A stop arriving during recovery must suppress retry scheduling. */
++        if (master_is_stopping(m)) {
++            break;
++        }
++
++        if (t->active && t->state == TXN_WAIT_TX_DONE && now >= t->deadline_us) {
++            finish_or_retry(m, t, MODBUS_RESULT_TRANSPORT_ERROR);
++        } else if (t->active && t->state == TXN_WAIT_RESPONSE && now >= t->deadline_us) {
++            finish_or_retry(m, t, MODBUS_RESULT_TIMEOUT);
++        } else if (t->active && t->state == TXN_RETRY_DELAY && now >= t->retry_at_us) {
++            if (!master_is_stopping(m)) {
++                begin_attempt(m, t);
++            }
++        }
++
+         ems_stack_diag_sample(&stack_diag, TAG);
+     }
+     /* Stop also terminates the active request and drains every accepted
+@@ -688,6 +754,7 @@
+     if (!h) return ESP_ERR_INVALID_ARG;
+     esp_err_t lock_err = master_api_lock(h, portMAX_DELAY);
+     if (lock_err != ESP_OK) return lock_err;
++
+     if (h->lifecycle_state == MODBUS_MASTER_DRAINING) {
+         master_api_unlock(h);
+         return ESP_OK;
+@@ -698,23 +765,28 @@
+         master_api_unlock(h);
+         return ESP_ERR_INVALID_STATE;
+     }
++
++    /* Keep api_lock for the entire stop operation. This serializes concurrent
++     * stop callers and prevents a second caller from taking the same stopped
++     * acknowledgement or deleting the same resources. The master task never
++     * takes api_lock, so it can finish its bounded shutdown path independently.
++     */
+     h->lifecycle_state = MODBUS_MASTER_QUIESCING;
+     master_set_stopping(h, true);
+-    master_api_unlock(h);
+ 
+     if (xSemaphoreTake(h->stopped_sem, pdMS_TO_TICKS(2000)) != pdTRUE) {
+         /* Keep all resources intact: the task may still be using them. A later
+-           stop call may retry waiting for the same task-exit acknowledgement. */
+-        if (master_api_lock(h, portMAX_DELAY) == ESP_OK) {
+-            h->lifecycle_state = MODBUS_MASTER_FAILED;
+-            master_api_unlock(h);
+-        }
++         * stop call may retry waiting for the same task-exit acknowledgement.
++         */
++        h->lifecycle_state = MODBUS_MASTER_FAILED;
++        master_api_unlock(h);
+         return ESP_ERR_TIMEOUT;
+     }
+ 
+     /* Phase 1 (Option A): stop the producer, but preserve the completion queue
+-       and its reservation semaphore for the application to drain. Deinit and
+-       resource destruction are deliberately deferred to WP2.5-B3/B4. */
++     * and its reservation semaphore for the application to drain. Deinit and
++     * resource destruction are deliberately deferred to WP2.5-B3/B4.
++     */
+     if (h->task) {
+         vTaskDelete(h->task);
+         h->task = NULL;
+@@ -731,10 +803,9 @@
+         vSemaphoreDelete(h->cancel_done_sem);
+         h->cancel_done_sem = NULL;
+     }
+-    if (master_api_lock(h, portMAX_DELAY) == ESP_OK) {
+-        h->lifecycle_state = MODBUS_MASTER_DRAINING;
+-        master_api_unlock(h);
+-    }
++
++    h->lifecycle_state = MODBUS_MASTER_DRAINING;
++    master_api_unlock(h);
+     return ESP_OK;
+ }
+ 

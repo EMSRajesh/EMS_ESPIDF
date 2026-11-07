@@ -1,0 +1,60 @@
+menu "MyEMS Modbus RTU"
+
+config MYEMS_MODBUS_SELF_TEST
+    bool "Run Modbus RTU self-test instead of normal polling"
+    default n
+    help
+        When enabled, the firmware runs a sequential test suite against the
+        configured Modbus RTU slave simulator. When disabled, normal meter
+        polling is started. Enable this only when connected to the test simulator.
+
+config MYEMS_WP24_FAULT_INJECTION
+    bool "Enable WP2.4 extended recovery test hooks"
+    depends on MYEMS_MODBUS_SELF_TEST
+    default n
+    help
+        Enables test-only RS485 event injection and recovery-activity forcing.
+        Keep disabled in every production configuration.
+
+config MYEMS_WP24_EXTENDED_TEST
+    int "WP2.4 test selection (0=off, 1=retry, 2=RX loss, 3=recovery timeout, 4=all A-I, 5=retry exhaustion, 6=retry exhaustion/request isolation)"
+    depends on MYEMS_MODBUS_SELF_TEST && MYEMS_WP24_FAULT_INJECTION
+    range 0 7
+    default 0
+    help
+        Select one extended test, WP24-J retry exhaustion, WP24-K request isolation, WP24-L stale-response guard, or the complete A-I campaign for this dedicated self-test firmware build.
+        These tests require the USB-RS485 simulator, never a live meter.
+
+
+config MYEMS_WP24_CASE_SELECTION
+    int "WP24 isolated case selection (0=full campaign, 1=A, 2=B, 3=C, 4=D, 5=E, 6=F)"
+    depends on MYEMS_MODBUS_SELF_TEST && MYEMS_WP24_FAULT_INJECTION
+    range 0 6
+    default 0
+    help
+        Select one WP24-A through WP24-F fault-injection case for isolated validation.
+        0 runs the existing full A-I campaign. Values 1..6 run only the selected
+        A-F case and its address-200 isolation/control request. Use only with the
+        USB-RS485 simulator, never a live meter.
+
+config MYEMS_WP25_D_TEST
+    bool "Run WP2.5-D pending-request cancellation test"
+    depends on MYEMS_MODBUS_SELF_TEST
+    default n
+    help
+        Runs a cancellation test with one active request and two queued requests.
+        Do not connect a live meter or simulator; requests are intentionally
+        cancelled before a response is expected.
+
+endmenu
+
+
+config MYEMS_WP25_B2_TEST
+    bool "Run WP2.5-B2 active shutdown and completion-drain test"
+    depends on MYEMS_MODBUS_SELF_TEST
+    default n
+    help
+        Tests stop with one active and two queued requests, terminal cancellation
+        completions, DRAINING state, post-stop completion draining, idempotent
+        repeated stop, and rejection of new submissions. Disconnect the RS485
+        simulator and never connect a live meter during this test.

@@ -1,0 +1,1 @@
+C master updated to support FC01/02/03/04/05/06/15/16/23 via modbus_master_submit(). Polling scheduler remains configured for read functions; writes are not auto-issued. Not yet built with ESP-IDF v6.1; see MYEMS_All_Modbus_Services_Build_and_Test_Guide.md.

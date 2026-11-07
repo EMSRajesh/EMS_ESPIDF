@@ -1,0 +1,128 @@
+--- a/main/Kconfig.projbuild
++++ b/main/Kconfig.projbuild
+@@ -17,12 +17,12 @@
+         Keep disabled in every production configuration.
+ 
+ config MYEMS_WP24_EXTENDED_TEST
+-    int "WP2.4 test selection (0=off, 1=retry, 2=RX loss, 3=recovery timeout, 4=all A-I, 5=retry exhaustion, 6=retry exhaustion/request isolation)"
++    int "WP2.4 test selection (0=off, 1=retry, 2=RX loss, 3=recovery timeout, 4=all A-I, 5=retry exhaustion, 6=retry exhaustion/request isolation, 7=WP24-L, 8=WP24-M1, 9=WP24-M2)"
+     depends on MYEMS_MODBUS_SELF_TEST && MYEMS_WP24_FAULT_INJECTION
+-    range 0 7
++    range 0 9
+     default 0
+     help
+-        Select one extended test, WP24-J retry exhaustion, WP24-K request isolation, WP24-L stale-response guard, or the complete A-I campaign for this dedicated self-test firmware build.
++        Select one extended test, WP24-J retry exhaustion, WP24-K request isolation, WP24-L stale-response guard, WP24-M1 pre-boundary, WP24-M2 post-boundary, or the complete A-I campaign for this dedicated self-test firmware build.
+         These tests require the USB-RS485 simulator, never a live meter.
+ 
+ 
+--- a/main/modbus_self_test.c
++++ b/main/modbus_self_test.c
+@@ -71,7 +71,7 @@
+     else { ESP_LOGI(TAG, "%s: PASS", name); } \
+ } while (0)
+ 
+-#if CONFIG_MYEMS_WP24_FAULT_INJECTION && CONFIG_MYEMS_WP24_EXTENDED_TEST > 0 && CONFIG_MYEMS_WP24_EXTENDED_TEST <= 7
++#if CONFIG_MYEMS_WP24_FAULT_INJECTION && CONFIG_MYEMS_WP24_EXTENDED_TEST > 0 && CONFIG_MYEMS_WP24_EXTENDED_TEST <= 9
+ static esp_err_t run_wp24_extended_test(modbus_master_handle_t master,
+                                         rs485_handle_t transport)
+ {
+@@ -81,7 +81,7 @@
+ #if CONFIG_MYEMS_WP24_EXTENDED_TEST == 5
+     rs485_stats_t wp24_j_before = {0}, wp24_j_after = {0};
+     if (rs485_get_stats(transport, &wp24_j_before) != ESP_OK) return ESP_FAIL;
+-#elif CONFIG_MYEMS_WP24_EXTENDED_TEST == 6 || CONFIG_MYEMS_WP24_EXTENDED_TEST == 7
++#elif CONFIG_MYEMS_WP24_EXTENDED_TEST == 6 || CONFIG_MYEMS_WP24_EXTENDED_TEST == 7 || CONFIG_MYEMS_WP24_EXTENDED_TEST == 8 || CONFIG_MYEMS_WP24_EXTENDED_TEST == 9
+     rs485_stats_t wp24_k_before = {0}, wp24_k_after = {0};
+     modbus_request_t next_request = {0};
+     modbus_result_t next_result = {0};
+@@ -104,10 +104,14 @@
+     request.max_retries = 0U;
+     ESP_LOGI(TAG, "WP24-I recovery-timeout test: forcing recovery activity; bus must remain unavailable");
+     ESP_ERROR_CHECK(rs485_test_force_recovery_activity(transport, true));
+-#elif CONFIG_MYEMS_WP24_EXTENDED_TEST == 5 || CONFIG_MYEMS_WP24_EXTENDED_TEST == 6 || CONFIG_MYEMS_WP24_EXTENDED_TEST == 7
++#elif CONFIG_MYEMS_WP24_EXTENDED_TEST == 5 || CONFIG_MYEMS_WP24_EXTENDED_TEST == 6 || CONFIG_MYEMS_WP24_EXTENDED_TEST == 7 || CONFIG_MYEMS_WP24_EXTENDED_TEST == 8 || CONFIG_MYEMS_WP24_EXTENDED_TEST == 9 || CONFIG_MYEMS_WP24_EXTENDED_TEST == 8 || CONFIG_MYEMS_WP24_EXTENDED_TEST == 9
+     request.max_retries = 1U;
+ #if CONFIG_MYEMS_WP24_EXTENDED_TEST == 7
+     ESP_LOGI(TAG, "WP24-L stale-response test: simulator delays first FC03/start=100 response 1200 ms and drops retry");
++#elif CONFIG_MYEMS_WP24_EXTENDED_TEST == 8
++    ESP_LOGI(TAG, "WP24-M1 boundary characterization: late FC03/start=100 response configured just BEFORE guard expiry; retry response dropped");
++#elif CONFIG_MYEMS_WP24_EXTENDED_TEST == 9
++    ESP_LOGI(TAG, "WP24-M2 boundary characterization: late FC03/start=100 response configured just AFTER guard expiry; retry response dropped");
+ #else
+     ESP_LOGI(TAG, "WP24-J/K retry exhaustion: simulator must drop both FC03/start=100 attempts");
+ #endif
+@@ -266,6 +270,73 @@
+              next_result.retry_count, next_result.registers[0], next_result.registers[1]);
+ wp24_l_fail:
+     ESP_LOGE(TAG, "WP24_EXTENDED_SUMMARY: FAIL mode=LATE_RESPONSE_AFTER_RETRY_EXHAUSTION");
++#elif CONFIG_MYEMS_WP24_EXTENDED_TEST == 8 || CONFIG_MYEMS_WP24_EXTENDED_TEST == 9
++    /*
++     * WP24-M1/M2 are timing-boundary characterization cases. The runner
++     * classifies the simulator's delayed frame against ESP recovery-start and
++     * recovery-release timestamps. Firmware accepts either terminal outcome
++     * for the first request because M2 may race with retry WAIT_RESPONSE:
++     * Modbus RTU FC03 has no transaction ID/address in its response.
++     */
++    const bool m1 = (CONFIG_MYEMS_WP24_EXTENDED_TEST == 8);
++    const bool first_is_timeout =
++        err == ESP_OK && result.request_id == request.request_id &&
++        result.status == MODBUS_RESULT_TIMEOUT && result.retry_count == 1U;
++    const bool first_is_late_frame_accepted =
++        err == ESP_OK && result.request_id == request.request_id &&
++        result.status == MODBUS_RESULT_OK && result.retry_count == 1U &&
++        result.register_count == 2U &&
++        result.registers[0] == 1100U && result.registers[1] == 1101U;
++
++    if (m1 && !first_is_timeout) {
++        ESP_LOGE(TAG, "WP24-M1 FAIL: expected timeout inside guard; wait=%s status=%d retries=%u values=[%u,%u]",
++                 esp_err_to_name(err), (int)result.status, result.retry_count,
++                 result.registers[0], result.registers[1]);
++        goto wp24_m_fail;
++    }
++    if (!m1 && !(first_is_timeout || first_is_late_frame_accepted)) {
++        ESP_LOGE(TAG, "WP24-M2 FAIL: unexpected first completion wait=%s status=%d retries=%u values=[%u,%u]",
++                 esp_err_to_name(err), (int)result.status, result.retry_count,
++                 result.registers[0], result.registers[1]);
++        goto wp24_m_fail;
++    }
++
++    first_request_id = result.request_id;
++    next_request.request_id = ++s_request_id;
++    next_request.slave_addr = 1U;
++    next_request.function_code = 3U;
++    next_request.start_register = 200U;
++    next_request.register_count = 2U;
++    next_request.timeout_ms = 1000U;
++    next_request.max_retries = 0U;
++    if (next_request.request_id == first_request_id ||
++        modbus_master_submit(master, &next_request) != ESP_OK) {
++        ESP_LOGE(TAG, "WP24-M FAIL: independent address-200 request submit failed");
++        goto wp24_m_fail;
++    }
++    err = modbus_master_get_completion(master, &next_result, pdMS_TO_TICKS(5000U));
++    if (err == ESP_OK && next_result.request_id == next_request.request_id &&
++        next_result.status == MODBUS_RESULT_OK && next_result.retry_count == 0U &&
++        next_result.register_count == 2U &&
++        next_result.registers[0] == 1200U && next_result.registers[1] == 1201U) {
++        if (m1) {
++            ESP_LOGI(TAG, "WP24-M1 PASS: response classified pre-boundary; first_status=TIMEOUT; next=[1200,1201]");
++            ESP_LOGI(TAG, "WP24_EXTENDED_SUMMARY: PASS mode=RECOVERY_GUARD_PRE_BOUNDARY");
++        } else if (first_is_late_frame_accepted) {
++            ESP_LOGW(TAG, "WP24-M2 OBSERVED: post-boundary stale FC03 response accepted by retry; next=[1200,1201]");
++            ESP_LOGI(TAG, "WP24_EXTENDED_SUMMARY: PASS mode=POST_GUARD_STALE_RESPONSE_ACCEPTED_CHARACTERIZED");
++        } else {
++            ESP_LOGI(TAG, "WP24-M2 PASS: post-boundary response not accepted by retry; next=[1200,1201]");
++            ESP_LOGI(TAG, "WP24_EXTENDED_SUMMARY: PASS mode=RECOVERY_GUARD_POST_BOUNDARY");
++        }
++        return ESP_OK;
++    }
++    ESP_LOGE(TAG, "WP24-M FAIL: next request wait=%s id=%lu expected=%lu status=%d retries=%u values=[%u,%u]",
++             esp_err_to_name(err), (unsigned long)next_result.request_id,
++             (unsigned long)next_request.request_id, (int)next_result.status,
++             next_result.retry_count, next_result.registers[0], next_result.registers[1]);
++wp24_m_fail:
++    ESP_LOGE(TAG, "WP24_EXTENDED_SUMMARY: FAIL mode=RECOVERY_GUARD_BOUNDARY_CHARACTERIZATION");
+ #endif
+     ESP_LOGE(TAG, "WP24_EXTENDED_SUMMARY: FAIL mode=%d", CONFIG_MYEMS_WP24_EXTENDED_TEST);
+     return ESP_FAIL;

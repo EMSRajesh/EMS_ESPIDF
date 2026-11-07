@@ -1,0 +1,6 @@
+WP2.5-B2 initial lifecycle test patch
+Baseline: uploaded myems_rs485_modbus_rtu_09_055(6).zip
+Changed:
+  main/Kconfig.projbuild
+  main/modbus_self_test.c
+No master implementation files changed.

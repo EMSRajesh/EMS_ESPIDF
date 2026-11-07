@@ -1,0 +1,195 @@
+--- a/components/modbus_rtu_master/src/modbus_rtu_master.c
++++ b/components/modbus_rtu_master/src/modbus_rtu_master.c
+@@ -81,6 +81,13 @@
+     size_t rx_length, expected_length;
+ } transaction_t;
+ 
++/* WP2.5-E1: singleton master-task workspaces, exclusively owned by master task. */
++static transaction_t s_master_transaction;
++static modbus_result_t s_publish_workspace;
++static modbus_result_t s_decode_workspace;
++static queued_request_t s_queued_workspace;
++static rs485_event_t s_event_workspace;
++
+ static uint16_t crc16(const uint8_t *p, size_t n) {
+     uint16_t c=0xFFFFU;
+     for(size_t i=0;i<n;i++){ c^=p[i]; for(unsigned b=0;b<8;b++) c=(c&1U)?(uint16_t)((c>>1U)^0xA001U):(uint16_t)(c>>1U); }
+@@ -140,18 +147,25 @@
+ }
+ static void publish(struct modbus_master *m,const transaction_t *t,modbus_result_status_t status,uint8_t ex,
+                     const modbus_result_t *payload) {
+-    modbus_result_t r={0};r.request_id=t->request.request_id;r.slave_addr=t->request.slave_addr;
+-    r.function_code=t->request.function_code;r.status=status;r.exception_code=ex;r.retry_count=t->retries_used;
+-    if(payload && status==MODBUS_RESULT_OK){r.register_count=payload->register_count;memcpy(r.registers,payload->registers,sizeof(r.registers));r.bit_count=payload->bit_count;memcpy(r.bits,payload->bits,sizeof(r.bits));}
++    modbus_result_t *r = &s_publish_workspace;
++    memset(r, 0, sizeof(*r));
++    r->request_id=t->request.request_id;r->slave_addr=t->request.slave_addr;
++    r->function_code=t->request.function_code;r->status=status;r->exception_code=ex;r->retry_count=t->retries_used;
++    if(payload && status==MODBUS_RESULT_OK){
++        r->register_count=payload->register_count;
++        memcpy(r->registers,payload->registers,sizeof(r->registers));
++        r->bit_count=payload->bit_count;
++        memcpy(r->bits,payload->bits,sizeof(r->bits));
++    }
+     /* Every accepted request owns one completion-slot token until its result is
+        consumed. With one producer and no other completion writers, this send
+        cannot fail unless the reservation invariant or queue ownership is broken. */
+-    if (xQueueSend(m->completion_queue, &r, 0) == pdTRUE) {
++    if (xQueueSend(m->completion_queue, r, 0) == pdTRUE) {
+         master_stat_increment(&m->stats.requests_completed);
+     } else {
+         master_stat_increment(&m->stats.completion_drops);
+         ESP_LOGE(TAG, "FATAL: reserved completion slot unavailable; request=%lu",
+-                 (unsigned long)r.request_id);
++                 (unsigned long)r->request_id);
+     }
+ }
+ static void reset_rx(transaction_t *t){t->rx_length=0;t->expected_length=0;}
+@@ -285,7 +299,9 @@
+     t->state=TXN_WAIT_TX_DONE;t->deadline_us=esp_timer_get_time()+(int64_t)MASTER_TX_DONE_TIMEOUT_MS*1000LL;
+ }
+ static void decode(struct modbus_master *m,transaction_t *t,const uint8_t *f,size_t n) {
+-    const modbus_request_t *q=&t->request;modbus_result_t out={0};
++    const modbus_request_t *q=&t->request;
++    modbus_result_t *out=&s_decode_workspace;
++    memset(out, 0, sizeof(*out));
+     if(!crc_ok(f,n)){finish_or_retry(m,t,MODBUS_RESULT_CRC_ERROR);return;}
+     if(f[0]!=q->slave_addr){
+         master_stat_increment(&m->stats.unexpected_slave_frames);
+@@ -301,12 +317,12 @@
+                        (q->function_code==23U?q->read_register_count:q->register_count);
+         uint8_t expected_bc=(q->function_code==1U||q->function_code==2U)?(uint8_t)((count+7U)/8U):(uint8_t)(count*2U);
+         if(n!=(size_t)(5U+f[2])||f[2]!=expected_bc){finish_or_retry(m,t,MODBUS_RESULT_PROTOCOL_ERROR);return;}
+-        if(q->function_code==1U||q->function_code==2U){out.bit_count=count;memcpy(out.bits,&f[3],expected_bc);}
+-        else {out.register_count=count;for(uint16_t i=0;i<count;i++)out.registers[i]=be16(&f[3+2U*i]);}
++        if(q->function_code==1U||q->function_code==2U){out->bit_count=count;memcpy(out->bits,&f[3],expected_bc);}
++        else {out->register_count=count;for(uint16_t i=0;i<count;i++)out->registers[i]=be16(&f[3+2U*i]);}
+     } else if(q->function_code==5U||q->function_code==6U||q->function_code==15U||q->function_code==16U) {
+         if(n!=8U||memcmp(f,&t->frame[0],6U)!=0){finish_or_retry(m,t,MODBUS_RESULT_PROTOCOL_ERROR);return;}
+     } else {finish_or_retry(m,t,MODBUS_RESULT_PROTOCOL_ERROR);return;}
+-    publish(m,t,MODBUS_RESULT_OK,0,&out);memset(t,0,sizeof(*t));
++    publish(m,t,MODBUS_RESULT_OK,0,out);memset(t,0,sizeof(*t));
+ }
+ static void rx_byte(struct modbus_master *m,transaction_t *t,uint8_t b) {
+     if(!t->active||t->state!=TXN_WAIT_RESPONSE)return;
+@@ -319,7 +335,7 @@
+         else t->expected_length=8U;
+         if(t->expected_length>sizeof(t->rx)){finish_or_retry(m,t,MODBUS_RESULT_PROTOCOL_ERROR);return;}
+     }
+-    if(t->expected_length&&t->rx_length==t->expected_length){uint8_t tmp[MODBUS_MAX_ADU_BYTES];size_t n=t->rx_length;memcpy(tmp,t->rx,n);decode(m,t,tmp,n);}
++    if(t->expected_length&&t->rx_length==t->expected_length){size_t n=t->rx_length;decode(m,t,t->rx,n);}
+ }
+ static void transport_event(struct modbus_master *m,transaction_t *t,const rs485_event_t *e) {
+     if(e->type==RS485_EVT_TX_DONE&&t->active&&t->state==TXN_WAIT_TX_DONE&&e->tx_id==t->request.request_id){t->state=TXN_WAIT_RESPONSE;uint32_t to=t->request.timeout_ms?t->request.timeout_ms:m->config.default_timeout_ms;t->deadline_us=esp_timer_get_time()+(int64_t)to*1000LL;reset_rx(t);return;}
+@@ -353,6 +369,24 @@
+  * cancel_pending. WP2.5-B will close API admission and make this atomic with
+  * respect to concurrent submit/stop calls.
+  */
++static void publish_queued_cancelled(struct modbus_master *m,
++                                      const modbus_request_t *request)
++{
++    modbus_result_t *r = &s_publish_workspace;
++    memset(r, 0, sizeof(*r));
++    r->request_id = request->request_id;
++    r->slave_addr = request->slave_addr;
++    r->function_code = request->function_code;
++    r->status = MODBUS_RESULT_CANCELLED;
++    if (xQueueSend(m->completion_queue, r, 0) == pdTRUE) {
++        master_stat_increment(&m->stats.requests_completed);
++    } else {
++        master_stat_increment(&m->stats.completion_drops);
++        ESP_LOGE(TAG, "FATAL: reserved completion slot unavailable; cancelled request=%lu",
++                 (unsigned long)r->request_id);
++    }
++}
++
+ static void service_cancel_pending(struct modbus_master *m, transaction_t *active)
+ {
+     if (!__atomic_exchange_n(&m->cancel_pending_requested, false, __ATOMIC_ACQ_REL)) {
+@@ -369,12 +403,8 @@
+         cancelled++;
+     }
+ 
+-    queued_request_t queued;
+-    while (xQueueReceive(m->request_queue, &queued, 0) == pdTRUE) {
+-        transaction_t pending = {0};
+-        pending.active = true;
+-        pending.request = queued.request;
+-        publish(m, &pending, MODBUS_RESULT_CANCELLED, 0U, NULL);
++    while (xQueueReceive(m->request_queue, &s_queued_workspace, 0) == pdTRUE) {
++        publish_queued_cancelled(m, &s_queued_workspace.request);
+         master_stat_increment(&m->stats.requests_cancelled);
+         master_stat_increment(&m->stats.queued_requests_cancelled);
+         cancelled++;
+@@ -387,39 +417,39 @@
+ }
+ 
+ static void master_task(void *arg) {
+-    struct modbus_master *m=arg;transaction_t t={0};
++    struct modbus_master *m=arg;
++    transaction_t *t = &s_master_transaction;
++    memset(t, 0, sizeof(*t));
+     const uint32_t allocated_stack_bytes = m->config.task_stack_size != 0U
+         ? m->config.task_stack_size : MASTER_TASK_STACK_SIZE_BYTES;
+     ems_stack_diag_t stack_diag;
+     ems_stack_diag_init(&stack_diag, "modbus_master", allocated_stack_bytes);
+     while(!m->stopping){
+         ems_stack_diag_sample(&stack_diag, TAG);
+-        service_cancel_pending(m, &t);
+-        if(!t.active && t.state != TXN_BUS_UNAVAILABLE){queued_request_t q;if(xQueueReceive(m->request_queue,&q,0)==pdTRUE){t.active=true;t.request=q.request;t.state=TXN_IDLE;t.retries_used=0;begin_attempt(m,&t);}}
+-        rs485_event_t e;if(rs485_get_event(m->config.transport,&e,pdMS_TO_TICKS(MASTER_LOOP_WAIT_MS))==ESP_OK){transport_event(m,&t,&e);while(rs485_get_event(m->config.transport,&e,0)==ESP_OK)transport_event(m,&t,&e);}
+-        service_cancel_pending(m, &t);
++        service_cancel_pending(m, t);
++        if(!t->active && t->state != TXN_BUS_UNAVAILABLE){if(xQueueReceive(m->request_queue,&s_queued_workspace,0)==pdTRUE){t->active=true;t->request=s_queued_workspace.request;t->state=TXN_IDLE;t->retries_used=0;begin_attempt(m,t);}}
++        if(rs485_get_event(m->config.transport,&s_event_workspace,pdMS_TO_TICKS(MASTER_LOOP_WAIT_MS))==ESP_OK){transport_event(m,t,&s_event_workspace);while(rs485_get_event(m->config.transport,&s_event_workspace,0)==ESP_OK)transport_event(m,t,&s_event_workspace);}
++        service_cancel_pending(m, t);
+         int64_t now=esp_timer_get_time();
+-        if (t.active && (t.state == TXN_RECOVERY ||
+-                         t.state == TXN_WAIT_RECOVERY_RELEASE)) {
+-            service_recovery(m, &t, now);
+-        }
+-        if(t.active&&t.state==TXN_WAIT_TX_DONE&&now>=t.deadline_us)finish_or_retry(m,&t,MODBUS_RESULT_TRANSPORT_ERROR);
+-        else if(t.active&&t.state==TXN_WAIT_RESPONSE&&now>=t.deadline_us)finish_or_retry(m,&t,MODBUS_RESULT_TIMEOUT);
+-        else if(t.active&&t.state==TXN_RETRY_DELAY&&now>=t.retry_at_us)begin_attempt(m,&t);
++        if (t->active && (t->state == TXN_RECOVERY ||
++                         t->state == TXN_WAIT_RECOVERY_RELEASE)) {
++            service_recovery(m, t, now);
++        }
++        if(t->active&&t->state==TXN_WAIT_TX_DONE&&now>=t->deadline_us)finish_or_retry(m,t,MODBUS_RESULT_TRANSPORT_ERROR);
++        else if(t->active&&t->state==TXN_WAIT_RESPONSE&&now>=t->deadline_us)finish_or_retry(m,t,MODBUS_RESULT_TIMEOUT);
++        else if(t->active&&t->state==TXN_RETRY_DELAY&&now>=t->retry_at_us)begin_attempt(m,t);
++        /* Sample after event/decode/recovery work, not only at loop entry. */
++        ems_stack_diag_sample(&stack_diag, TAG);
+     }
+     /* Stop also terminates the active request and drains every accepted
+        queued request before the owner tears down the queues. */
+-    if(t.active) {
+-        publish(m,&t,MODBUS_RESULT_CANCELLED,0,NULL);
++    if(t->active) {
++        publish(m,t,MODBUS_RESULT_CANCELLED,0,NULL);
+         master_stat_increment(&m->stats.requests_cancelled);
+         master_stat_increment(&m->stats.active_requests_cancelled);
+     }
+-    queued_request_t queued;
+-    while (xQueueReceive(m->request_queue, &queued, 0) == pdTRUE) {
+-        transaction_t pending = {0};
+-        pending.active = true;
+-        pending.request = queued.request;
+-        publish(m, &pending, MODBUS_RESULT_CANCELLED, 0U, NULL);
++    while (xQueueReceive(m->request_queue, &s_queued_workspace, 0) == pdTRUE) {
++        publish_queued_cancelled(m, &s_queued_workspace.request);
+         master_stat_increment(&m->stats.requests_cancelled);
+         master_stat_increment(&m->stats.queued_requests_cancelled);
+     }
+@@ -439,6 +469,11 @@
+     if (s_master_in_use) return ESP_ERR_INVALID_STATE;
+     struct modbus_master *m = &s_master;
+     memset(m, 0, sizeof(*m));
++    memset(&s_master_transaction, 0, sizeof(s_master_transaction));
++    memset(&s_publish_workspace, 0, sizeof(s_publish_workspace));
++    memset(&s_decode_workspace, 0, sizeof(s_decode_workspace));
++    memset(&s_queued_workspace, 0, sizeof(s_queued_workspace));
++    memset(&s_event_workspace, 0, sizeof(s_event_workspace));
+     m->config = *c;
+     m->request_queue = xQueueCreateStatic(c->request_queue_length, sizeof(queued_request_t),
+                                           s_request_queue_storage, &s_request_queue_cb);

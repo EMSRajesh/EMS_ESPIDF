@@ -1,0 +1,34 @@
+--- a/components/modbus_rtu_master/include/modbus_rtu_master.h
++++ b/components/modbus_rtu_master/include/modbus_rtu_master.h
+@@ -22,6 +22,16 @@
+ #define MODBUS_MAX_RETRIES 5U
+ 
+ typedef struct modbus_master *modbus_master_handle_t;
++
++typedef enum {
++    MODBUS_MASTER_STOPPED = 0,
++    MODBUS_MASTER_STARTING,
++    MODBUS_MASTER_RUNNING,
++    MODBUS_MASTER_QUIESCING,
++    MODBUS_MASTER_DRAINING,
++    MODBUS_MASTER_STOPPING,
++    MODBUS_MASTER_FAILED
++} modbus_master_lifecycle_state_t;
+ typedef enum {
+     MODBUS_RESULT_OK = 0, MODBUS_RESULT_TIMEOUT, MODBUS_RESULT_CRC_ERROR,
+     MODBUS_RESULT_PROTOCOL_ERROR, MODBUS_RESULT_EXCEPTION,
+@@ -101,6 +111,14 @@
+                                        uint32_t *cancelled_count);
+ esp_err_t modbus_master_get_completion(modbus_master_handle_t handle, modbus_result_t *result, TickType_t timeout_ticks);
+ esp_err_t modbus_master_get_stats(modbus_master_handle_t handle, modbus_master_stats_t *stats);
++esp_err_t modbus_master_get_lifecycle_state(modbus_master_handle_t handle, modbus_master_lifecycle_state_t *state);
++/*
++ * WP2.5-B Option A, phase 1: close request admission, stop the producer task,
++ * publish cancellation completions for accepted work, and leave the completion
++ * queue available for draining. Resource deinitialization is a later phase.
++ * Until WP2.5-B3/B4 adds deinit, do not attempt to restart this singleton after
++ * stop; the handle remains valid in MODBUS_MASTER_DRAINING.
++ */
+ esp_err_t modbus_master_stop(modbus_master_handle_t handle);
+ 
+ #ifdef __cplusplus
