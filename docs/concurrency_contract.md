@@ -42,15 +42,20 @@ The master owns transaction deadlines. The scheduler must not infer that a trans
 
 The master is the sole producer of its completion queue. The acquisition task is the sole consumer.
 
-A finite queue cannot guarantee delivery if its consumer permanently stops. Therefore the implementation must apply backpressure before starting work that could need a terminal completion:
+The implementation uses a counting-semaphore reservation tied to the configured completion queue capacity:
 
-- Ensure completion capacity is available before dequeuing/starting a new transaction, with one slot reserved for the active transaction.
-- Since only one transaction is active per bus and only the master publishes terminal results, that reserved slot cannot be consumed by a second producer.
-- Publish the terminal result without a zero-wait drop path.
-- If shutdown prevents normal consumption, use a defined cancellation/drain protocol; do not silently drop terminal results.
-- Keep a completion-drop counter as a diagnostic assertion/fault indicator, not as the expected overflow policy.
+1. `modbus_master_submit()` takes one completion-slot token before it enqueues the request.
+2. If no token is available, submission returns `ESP_ERR_TIMEOUT`; the request is not accepted and `completion_backpressure_rejections` increments.
+3. If the request queue is full after reservation, the token is returned and submission is rejected.
+4. An accepted request retains its token while queued, active, retrying, and after its terminal result is published.
+5. `modbus_master_get_completion()` returns the token only after it has copied a completion result to the caller.
+6. Since outstanding accepted requests cannot exceed completion queue capacity, and there is one completion producer, a terminal result has a reserved queue slot.
 
-This reservation approach is valid only if the master remains the sole completion producer and it never starts a second transaction while a prior transaction is active.
+This policy deliberately applies backpressure at request submission rather than allowing the master to dequeue work and later discover that no completion slot is available. It bounds the total number of accepted-but-not-consumed requests, including the active request.
+
+`completion_drops` remains a diagnostic assertion counter. A nonzero value indicates an invariant violation, queue misuse, or an implementation defect; it is not an expected overload outcome. The master must not add a second completion producer without revisiting the reservation design.
+
+The reservation token is held until the consumer removes the result. Consequently, a stalled or stopped consumer eventually causes new submissions to be rejected rather than causing terminal results to be lost. Shutdown cancellation/draining of all queued requests is handled separately by WP2.5-D and lifecycle behavior by WP2.5-B.
 
 ## 5. Timeout and retry policy
 

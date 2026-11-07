@@ -10,7 +10,7 @@
     "clangd.arguments": [
       "--background-index",
       "--query-driver=**",
-      "--compile-commands-dir=c:\\Users\\malli\\OneDrive\\Desktop\\EMS_MVP\\WorkESP\\myems_rs485_modbus_rtu_09_053\\build"
+      "--compile-commands-dir=${workspaceFolder}/build_production"
     ],
     "idf.port": "COM11",
     "idf.flashType": "UART"
