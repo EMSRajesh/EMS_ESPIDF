@@ -1,4 +1,4 @@
-# MyEMS host unit tests (DP-WP4).
+# MyEMS host unit tests (DP-WP4: D1 ems_measurement, D2 ems_register_map).
 #
 # Builds the pure-C DP-WP4 components with the PC's compiler and runs them
 # with the Unity framework that ships inside ESP-IDF:
@@ -61,6 +61,18 @@ if(NOT MSVC)
     target_link_libraries(ems_measurement PUBLIC m)
 endif()
 
+# ---------------------------------- component under test (4C, DP-WP4 D2) ---
+set(EMS_REGMAP_DIR "${MYEMS_ROOT}/components/ems_register_map")
+add_library(ems_register_map STATIC
+    "${EMS_REGMAP_DIR}/src/ems_decode.c"
+    "${EMS_REGMAP_DIR}/src/ems_convert.c"
+    "${EMS_REGMAP_DIR}/src/ems_counter.c")
+target_include_directories(ems_register_map PUBLIC "${EMS_REGMAP_DIR}/include")
+target_compile_options(ems_register_map PRIVATE ${EMS_WARNINGS})
+if(NOT MSVC)
+    target_link_libraries(ems_register_map PUBLIC m)
+endif()
+
 # --------------------------------------------------------------- tests ---
 add_executable(test_ems_measurement
     test_main.c
@@ -69,14 +81,23 @@ add_executable(test_ems_measurement
 target_link_libraries(test_ems_measurement PRIVATE ems_measurement unity)
 target_compile_options(test_ems_measurement PRIVATE ${EMS_WARNINGS})
 
+# The register map tests use parameter IDs from ems_measurement (header only).
+add_executable(test_ems_register_map
+    test_main_regmap.c
+    test_ems_register_map.c
+    test_ems_counter.c)
+target_link_libraries(test_ems_register_map PRIVATE ems_register_map ems_measurement unity)
+target_compile_options(test_ems_register_map PRIVATE ${EMS_WARNINGS})
+
+set(EMS_HOST_TARGETS ems_measurement ems_register_map test_ems_measurement test_ems_register_map)
 if(EMS_HOST_SANITIZE AND NOT MSVC)
-    foreach(t ems_measurement test_ems_measurement)
+    foreach(t ${EMS_HOST_TARGETS})
         target_compile_options(${t} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(${t} PRIVATE -fsanitize=address,undefined)
     endforeach()
 endif()
 if(EMS_HOST_COVERAGE AND NOT MSVC)
-    foreach(t ems_measurement test_ems_measurement)
+    foreach(t ${EMS_HOST_TARGETS})
         target_compile_options(${t} PRIVATE --coverage -O0)
         target_link_options(${t} PRIVATE --coverage)
     endforeach()
@@ -84,3 +105,4 @@ endif()
 
 enable_testing()
 add_test(NAME ems_measurement COMMAND test_ems_measurement)
+add_test(NAME ems_register_map COMMAND test_ems_register_map)

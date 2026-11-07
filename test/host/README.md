@@ -1,6 +1,11 @@
 # MyEMS host unit tests
 
-Pure-C DP-WP4 code (`components/ems_measurement`, later `ems_register_map`) is tested on the PC, without the ESP32.
+Pure-C DP-WP4 code is tested on the PC, without the ESP32:
+
+| Test executable | Component | Milestone | Tests |
+|---|---|---|---|
+| `test_ems_measurement` | `components/ems_measurement` (dictionary, quality, state store) | D1 | 29 |
+| `test_ems_register_map` | `components/ems_register_map` (decode, convert, validate, counters) | D2 | 34 |
 
 ## One-time setup (Windows)
 
@@ -21,7 +26,7 @@ cmake --build build_host
 ctest --test-dir build_host --output-on-failure
 ```
 
-Expected: `100% tests passed`. For per-test output run `.\build_host\test_ems_measurement.exe`.
+Expected: `100% tests passed, 0 tests failed out of 2`. For per-test output run `.\build_host\test_ems_measurement.exe` or `.\build_host\test_ems_register_map.exe`.
 
 `build_host` is ignored by Git. To start clean, delete the folder.
 
