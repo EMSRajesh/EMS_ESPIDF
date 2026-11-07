@@ -71,7 +71,8 @@ static bool request_rejected(modbus_master_handle_t master, uint8_t function_cod
     else { ESP_LOGI(TAG, "%s: PASS", name); } \
 } while (0)
 
-#if CONFIG_MYEMS_WP24_FAULT_INJECTION && CONFIG_MYEMS_WP24_EXTENDED_TEST > 0 && CONFIG_MYEMS_WP24_EXTENDED_TEST <= 9
+/* Selection 4 (A-I campaign) uses run_wp24_all_campaign(), not this function. */
+#if CONFIG_MYEMS_WP24_FAULT_INJECTION && CONFIG_MYEMS_WP24_EXTENDED_TEST > 0 && CONFIG_MYEMS_WP24_EXTENDED_TEST <= 9 && CONFIG_MYEMS_WP24_EXTENDED_TEST != 4
 static esp_err_t run_wp24_extended_test(modbus_master_handle_t master,
                                         rs485_handle_t transport)
 {
