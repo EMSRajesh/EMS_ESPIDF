@@ -126,7 +126,10 @@ class TestGeneration(unittest.TestCase):
         self.assertEqual(self.gen("--check"), 1)          # nothing generated yet
         self.assertEqual(self.gen(), 0)
         self.assertEqual(self.gen("--check"), 0)
-        self.h.write_text(self.h.read_text().replace("\n", "\r\n"), encoding="utf-8")
+        # Simulate a Git CRLF checkout. Write bytes: text mode on Windows would
+        # turn "\r\n" into "\r\r\n".
+        self.h.write_bytes(self.h.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        self.assertIn(b"\r\n", self.h.read_bytes())
         self.assertEqual(self.gen("--check"), 0)          # CRLF checkout is not a difference
 
     def test_umd002_adding_a_parameter_keeps_existing_ids(self):
