@@ -6,6 +6,8 @@ Pure-C DP-WP4 code is tested on the PC, without the ESP32:
 |---|---|---|---|
 | `test_ems_measurement` | `components/ems_measurement` (dictionary, quality, state store) | D1 | 29 |
 | `test_ems_register_map` | `components/ems_register_map` (decode, convert, validate, counters) | D2 | 34 |
+| `test_ems_config_lab` | `components/ems_profile` + `main/generated` (site `lab_bench`): CRC, firmware validation, Test Spec 4.1/4.3 vectors | D3 | 9 |
+| `test_ems_config_decoder` | `components/ems_profile` + `test/host/generated/decoder_test`: CRC, decoder vectors D1–D11 | D3 | 6 |
 
 ## One-time setup (Windows)
 
@@ -26,7 +28,7 @@ cmake --build build_host
 ctest --test-dir build_host --output-on-failure
 ```
 
-Expected: `100% tests passed, 0 tests failed out of 2`. For per-test output run `.\build_host\test_ems_measurement.exe` or `.\build_host\test_ems_register_map.exe`.
+Expected: `100% tests passed, 0 tests failed out of 4`. For per-test output run any of the `.\build_host\test_*.exe` files.
 
 `build_host` is ignored by Git. To start clean, delete the folder.
 
@@ -36,7 +38,12 @@ Expected: `100% tests passed, 0 tests failed out of 2`. For per-test output run 
 python -m unittest discover -s tools/profile/tests -v
 ```
 
-These include a check that the generated files in `components/ems_measurement` match `config/umd/umd_v1.json`.
+These include checks that the generated files are up to date: `components/ems_measurement` against `config/umd/umd_v1.json`, and `main/generated` plus `test/host/generated/decoder_test` against `config/`. If you change anything in `config/`, regenerate:
+
+```powershell
+python tools/profile/myems_profile_tool.py generate --site config/site/lab_bench.site.json --target sim
+python tools/profile/myems_profile_tool.py generate --site config/site/lab_decoder_test.site.json --target sim --out-dir test/host/generated/decoder_test
+```
 
 ## Options
 

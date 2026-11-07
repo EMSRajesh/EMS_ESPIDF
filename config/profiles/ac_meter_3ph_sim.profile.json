@@ -1,0 +1,41 @@
+{
+  "$schema": "../schema/profile.schema.json",
+  "schema": "myems.profile/1.1",
+  "profile_id": "AC_METER_3PH_SIM",
+  "profile_version": "1.1.0",
+  "classification": "SIMULATION_ONLY",
+  "device_type": "AC_METER",
+  "vendor": {
+    "vendor_id": "MYEMS_SIMULATOR",
+    "model_number": "SIM_ACMETER_3PH_V1",
+    "protocol_document_reference": "MYEMS_SIMULATED_PROTOCOL_V1"
+  },
+  "protocol": "MODBUS_RTU",
+  "register_map_ref": { "map_id": "MYEMS_SIM_ACMETER_3PH", "map_version": "1.1.0" },
+  "comm_defaults": {
+    "timeout_ms": 500,
+    "max_retries": 1,
+    "comm_lost_threshold": 2,
+    "probe_group": "status",
+    "probe_interval_ms": 30000
+  },
+  "capabilities": {
+    "phase_voltage": true,
+    "phase_current": true,
+    "active_power": true,
+    "reactive_power": true,
+    "apparent_power": true,
+    "power_factor": true,
+    "frequency": true,
+    "active_energy_import": true,
+    "active_energy_export": true,
+    "device_status": true,
+    "power_quality": false,
+    "demand_measurement": false
+  },
+  "conventions": {
+    "power_sign": "IMPORT_POSITIVE",
+    "pf_sign": "SIGNED_BY_ACTIVE_POWER",
+    "ratio_handling": "MYEMS_APPLIES"
+  }
+}

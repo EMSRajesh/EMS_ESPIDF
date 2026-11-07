@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "myems.regmap/1.1",
+  "title": "MyEMS Modbus register map (DP-WP4 Design v1.1 \u00a77, \u00a78.2)",
+  "type": "object",
+  "required": [
+    "schema",
+    "map_id",
+    "map_version",
+    "classification",
+    "poll_groups",
+    "mappings"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "note": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "myems.regmap/1.1"
+    },
+    "map_id": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]*$"
+    },
+    "map_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "classification": {
+      "enum": [
+        "PRODUCTION",
+        "SIMULATION_ONLY",
+        "TEST_ONLY"
+      ]
+    },
+    "poll_groups": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "function_code",
+          "start",
+          "count",
+          "interval_ms",
+          "offset_ms",
+          "stale_timeout_ms"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "function_code": {
+            "enum": [
+              3,
+              4
+            ]
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 125
+          },
+          "interval_ms": {
+            "type": "integer",
+            "minimum": 1000
+          },
+          "offset_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "stale_timeout_ms": {
+            "type": "integer",
+            "minimum": 1001
+          }
+        }
+      }
+    },
+    "mappings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mapping_id",
+          "param",
+          "group",
+          "address",
+          "type",
+          "order",
+          "scale",
+          "offset",
+          "unit",
+          "min",
+          "max",
+          "flags"
+        ],
+        "properties": {
+          "mapping_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "param": {
+            "type": "string"
+          },
+          "group": {
+            "type": "string"
+          },
+          "address": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "type": {
+            "enum": [
+              "UINT16",
+              "INT16",
+              "UINT32",
+              "INT32",
+              "FLOAT32",
+              "BITFIELD16"
+            ]
+          },
+          "order": {
+            "enum": [
+              "AB",
+              "BA",
+              "ABCD",
+              "CDAB",
+              "BADC",
+              "DCBA"
+            ]
+          },
+          "scale": {
+            "type": "number",
+            "not": {
+              "const": 0
+            }
+          },
+          "offset": {
+            "type": "number"
+          },
+          "unit": {
+            "type": "string"
+          },
+          "min": {
+            "type": "number"
+          },
+          "max": {
+            "type": "number"
+          },
+          "bit_mask": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "flags": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "APPLY_CT",
+                "APPLY_PT",
+                "COUNTER",
+                "ROLLOVER"
+              ]
+            }
+          },
+          "test_vector": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

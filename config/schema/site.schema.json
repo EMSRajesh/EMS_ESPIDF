@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "myems.site/1.1",
+  "title": "MyEMS site configuration (DP-WP4 Design v1.1 \u00a75, \u00a78.3)",
+  "type": "object",
+  "required": [
+    "schema",
+    "site_id",
+    "buses",
+    "devices"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "myems.site/1.1"
+    },
+    "site_id": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]*$"
+    },
+    "buses": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "bus_id",
+          "uart",
+          "tx_gpio",
+          "rx_gpio",
+          "rts_gpio",
+          "baud",
+          "parity",
+          "stop_bits"
+        ],
+        "properties": {
+          "bus_id": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          },
+          "uart": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "tx_gpio": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 48
+          },
+          "rx_gpio": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 48
+          },
+          "rts_gpio": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 48
+          },
+          "baud": {
+            "enum": [
+              1200,
+              2400,
+              4800,
+              9600,
+              19200,
+              38400,
+              57600,
+              115200
+            ]
+          },
+          "parity": {
+            "enum": [
+              "NONE",
+              "EVEN",
+              "ODD"
+            ]
+          },
+          "stop_bits": {
+            "enum": [
+              1,
+              2
+            ]
+          }
+        }
+      }
+    },
+    "devices": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "device_instance_id",
+          "slot",
+          "profile_id",
+          "bus_id",
+          "slave_id",
+          "ct_ratio",
+          "pt_ratio",
+          "location",
+          "enabled"
+        ],
+        "properties": {
+          "device_instance_id": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "profile_id": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          },
+          "bus_id": {
+            "type": "string"
+          },
+          "slave_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 247
+          },
+          "ct_ratio": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "pt_ratio": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "location": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "comm_overrides": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "timeout_ms": {
+                "type": "integer",
+                "minimum": 50,
+                "maximum": 5000
+              },
+              "max_retries": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 5
+              },
+              "comm_lost_threshold": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10
+              },
+              "probe_interval_ms": {
+                "type": "integer",
+                "minimum": 1000
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

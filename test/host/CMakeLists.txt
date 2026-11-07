@@ -1,4 +1,5 @@
-# MyEMS host unit tests (DP-WP4: D1 ems_measurement, D2 ems_register_map).
+# MyEMS host unit tests (DP-WP4: D1 ems_measurement, D2 ems_register_map,
+# D3 ems_profile + generated configuration tables).
 #
 # Builds the pure-C DP-WP4 components with the PC's compiler and runs them
 # with the Unity framework that ships inside ESP-IDF:
@@ -73,6 +74,13 @@ if(NOT MSVC)
     target_link_libraries(ems_register_map PUBLIC m)
 endif()
 
+# ------------------------------------ component under test (4A, DP-WP4 D3) ---
+set(EMS_PROFILE_DIR "${MYEMS_ROOT}/components/ems_profile")
+add_library(ems_profile STATIC "${EMS_PROFILE_DIR}/src/ems_config_crc.c")
+target_include_directories(ems_profile PUBLIC "${EMS_PROFILE_DIR}/include")
+target_link_libraries(ems_profile PUBLIC ems_register_map)
+target_compile_options(ems_profile PRIVATE ${EMS_WARNINGS})
+
 # --------------------------------------------------------------- tests ---
 add_executable(test_ems_measurement
     test_main.c
@@ -89,7 +97,28 @@ add_executable(test_ems_register_map
 target_link_libraries(test_ems_register_map PRIVATE ems_register_map ems_measurement unity)
 target_compile_options(test_ems_register_map PRIVATE ${EMS_WARNINGS})
 
-set(EMS_HOST_TARGETS ems_measurement ems_register_map test_ems_measurement test_ems_register_map)
+# Generated tables (tools/profile/myems_profile_tool.py generate). Each set
+# defines 'ems_config_build', so each gets its own executable:
+#   lab_bench    -> main/generated/                      (the firmware's copy)
+#   decoder_test -> test/host/generated/decoder_test/    (test fixture)
+foreach(cfg lab decoder)
+    if(cfg STREQUAL "lab")
+        set(gen_dir "${MYEMS_ROOT}/main/generated")
+    else()
+        set(gen_dir "${CMAKE_CURRENT_LIST_DIR}/generated/decoder_test")
+    endif()
+    add_executable(test_ems_config_${cfg}
+        test_main_config_${cfg}.c
+        test_ems_config_common.c
+        test_ems_config_${cfg}.c
+        "${gen_dir}/ems_config_gen.c")
+    target_include_directories(test_ems_config_${cfg} PRIVATE "${gen_dir}")
+    target_link_libraries(test_ems_config_${cfg} PRIVATE ems_profile ems_register_map ems_measurement unity)
+    target_compile_options(test_ems_config_${cfg} PRIVATE ${EMS_WARNINGS})
+endforeach()
+
+set(EMS_HOST_TARGETS ems_measurement ems_register_map ems_profile
+    test_ems_measurement test_ems_register_map test_ems_config_lab test_ems_config_decoder)
 if(EMS_HOST_SANITIZE AND NOT MSVC)
     foreach(t ${EMS_HOST_TARGETS})
         target_compile_options(${t} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -106,3 +135,5 @@ endif()
 enable_testing()
 add_test(NAME ems_measurement COMMAND test_ems_measurement)
 add_test(NAME ems_register_map COMMAND test_ems_register_map)
+add_test(NAME ems_config_lab COMMAND test_ems_config_lab)
+add_test(NAME ems_config_decoder COMMAND test_ems_config_decoder)

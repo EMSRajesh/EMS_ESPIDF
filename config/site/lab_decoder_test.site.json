@@ -1,0 +1,31 @@
+{
+  "$schema": "../schema/site.schema.json",
+  "schema": "myems.site/1.1",
+  "site_id": "LAB_DECODER_TEST",
+  "description": "Decoder test block on hardware (TEST_ONLY).",
+  "buses": [
+    {
+      "bus_id": "RS485_BUS_1",
+      "uart": 1,
+      "tx_gpio": 17,
+      "rx_gpio": 18,
+      "rts_gpio": 21,
+      "baud": 9600,
+      "parity": "EVEN",
+      "stop_bits": 1
+    }
+  ],
+  "devices": [
+    {
+      "device_instance_id": "DECODER_TEST_01",
+      "slot": 0,
+      "profile_id": "DECODER_TEST_SIM",
+      "bus_id": "RS485_BUS_1",
+      "slave_id": 1,
+      "ct_ratio": 1.0,
+      "pt_ratio": 1.0,
+      "location": "LAB",
+      "enabled": true
+    }
+  ]
+}

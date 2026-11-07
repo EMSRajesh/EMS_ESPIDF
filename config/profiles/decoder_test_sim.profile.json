@@ -1,0 +1,41 @@
+{
+  "$schema": "../schema/profile.schema.json",
+  "schema": "myems.profile/1.1",
+  "profile_id": "DECODER_TEST_SIM",
+  "profile_version": "1.1.0",
+  "classification": "TEST_ONLY",
+  "device_type": "TEST_DEVICE",
+  "vendor": {
+    "vendor_id": "MYEMS_SIMULATOR",
+    "model_number": "SIM_DECODER_TEST_V1",
+    "protocol_document_reference": "MYEMS_SIMULATED_PROTOCOL_V1"
+  },
+  "protocol": "MODBUS_RTU",
+  "register_map_ref": { "map_id": "MYEMS_SIM_DECODER_TEST", "map_version": "1.1.0" },
+  "comm_defaults": {
+    "timeout_ms": 500,
+    "max_retries": 1,
+    "comm_lost_threshold": 2,
+    "probe_group": "decoder",
+    "probe_interval_ms": 30000
+  },
+  "capabilities": {
+    "phase_voltage": true,
+    "phase_current": true,
+    "active_power": true,
+    "reactive_power": true,
+    "apparent_power": false,
+    "power_factor": true,
+    "frequency": false,
+    "active_energy_import": true,
+    "active_energy_export": false,
+    "device_status": true,
+    "power_quality": false,
+    "demand_measurement": false
+  },
+  "conventions": {
+    "power_sign": "IMPORT_POSITIVE",
+    "pf_sign": "SIGNED_BY_ACTIVE_POWER",
+    "ratio_handling": "METER_REPORTS_PRIMARY"
+  }
+}

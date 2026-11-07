@@ -1,0 +1,31 @@
+{
+  "$schema": "../schema/site.schema.json",
+  "schema": "myems.site/1.1",
+  "site_id": "LAB_RATIO_CT200",
+  "description": "Ratio tests (Test Spec 4.3): CT 200, PT 1.",
+  "buses": [
+    {
+      "bus_id": "RS485_BUS_1",
+      "uart": 1,
+      "tx_gpio": 17,
+      "rx_gpio": 18,
+      "rts_gpio": 21,
+      "baud": 9600,
+      "parity": "EVEN",
+      "stop_bits": 1
+    }
+  ],
+  "devices": [
+    {
+      "device_instance_id": "GRID_INCOMER_CT200",
+      "slot": 0,
+      "profile_id": "AC_METER_3PH_SIM",
+      "bus_id": "RS485_BUS_1",
+      "slave_id": 1,
+      "ct_ratio": 200.0,
+      "pt_ratio": 1.0,
+      "location": "MAIN_INCOMER",
+      "enabled": true
+    }
+  ]
+}
