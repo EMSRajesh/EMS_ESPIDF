@@ -974,7 +974,14 @@ CONFIG_PARTITION_TABLE_MD5=y
 # MyEMS Modbus RTU
 #
 CONFIG_MYEMS_MODBUS_SELF_TEST=y
+# default:
+# CONFIG_MYEMS_WP24_FAULT_INJECTION is not set
+# default:
+# CONFIG_MYEMS_WP25_D_TEST is not set
 # end of MyEMS Modbus RTU
+
+# default:
+# CONFIG_MYEMS_WP25_B2_TEST is not set
 
 #
 # Compiler options

@@ -981,6 +981,9 @@ CONFIG_MYEMS_WP24_CASE_SELECTION=0
 # CONFIG_MYEMS_WP25_D_TEST is not set
 # end of MyEMS Modbus RTU
 
+# default:
+# CONFIG_MYEMS_WP25_B2_TEST is not set
+
 #
 # Compiler options
 #
