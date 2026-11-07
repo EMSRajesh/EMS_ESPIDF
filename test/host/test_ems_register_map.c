@@ -102,6 +102,21 @@ static ems_decode_status_t dec2(uint8_t type, uint8_t order, uint16_t r0, uint16
 
 #define TOL 1e-9
 
+/*
+ * Bit-exact double comparison. Do not write "value == 2.3": compilers using
+ * x87 (32-bit MinGW, FLT_EVAL_METHOD 2) evaluate the constant in 80-bit
+ * precision, so the comparison fails even when value is the correctly rounded
+ * double. Passing both through a double parameter rounds the constant first.
+ */
+static uint64_t dbits(double d)
+{
+    uint64_t u;
+    memcpy(&u, &d, sizeof(u));
+    return u;
+}
+#define ASSERT_SAME_DOUBLE(expected, actual) \
+    TEST_ASSERT_EQUAL_HEX64(dbits(expected), dbits(actual))
+
 /* ------------------------------------------------------------ DEC tests --- */
 
 static void test_DEC001_uint16(void)
@@ -296,11 +311,11 @@ static void test_CONV_decimal_scales_are_exact(void)
 {
     double v;
     conv(EMS_PARAM_AC_VOLTAGE_L1_N, NULL, &v);
-    TEST_ASSERT_TRUE(v == 230.0);                       /* not 230.00000000000003 */
+    ASSERT_SAME_DOUBLE(230.0, v);
     conv(EMS_PARAM_AC_ENERGY_IMPORT_ACTIVE, NULL, &v);
-    TEST_ASSERT_TRUE(v == 100.25);
+    ASSERT_SAME_DOUBLE(100.25, v);
     conv(EMS_PARAM_AC_VOLTAGE_L3_N, NULL, &v);
-    TEST_ASSERT_TRUE(v == 229.5);
+    ASSERT_SAME_DOUBLE(229.5, v);
 
     /* Where multiplication is NOT exact: 2300 * 0.001 = 2.3000000000000003,
      * 2300 / 1000 = 2.3 (the nearest double to the decimal value). */
@@ -311,7 +326,7 @@ static void test_CONV_decimal_scales_are_exact(void)
     m.scale = 0.001; m.min = 0.0; m.max = 100.0; m.type = EMS_REG_UINT16;
     ems_regmap_result_t r;
     TEST_ASSERT_EQUAL_INT(EMS_DEC_OK, ems_regmap_convert(&m, &g, regs, 1, NULL, &r));
-    TEST_ASSERT_TRUE(r.value == 2.3);
+    ASSERT_SAME_DOUBLE(2.3, r.value);
 }
 
 static void test_CONV001_scale_and_offset(void)
@@ -425,7 +440,7 @@ static void test_CONV007_largest_energy_counter_is_exact(void)
     ems_regmap_result_t r;
     TEST_ASSERT_EQUAL_INT(EMS_DEC_OK,
         ems_regmap_convert(map_for(EMS_PARAM_AC_ENERGY_IMPORT_ACTIVE), &k_groups[1], regs, 4, NULL, &r));
-    TEST_ASSERT_TRUE(r.value == 42949672.95);
+    ASSERT_SAME_DOUBLE(42949672.95, r.value);
     TEST_ASSERT_EQUAL_HEX32(0xFFFFFFFFu, r.raw_bits);
     /* One count below differs by exactly 0.01 kWh. */
     const uint16_t regs2[4] = { 0xFFFF, 0xFFFE, 0x0000, 0x0000 };
