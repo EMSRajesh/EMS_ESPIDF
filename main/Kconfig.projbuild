@@ -8,6 +8,18 @@ config MYEMS_MODBUS_SELF_TEST
         configured Modbus RTU slave simulator. When disabled, normal meter
         polling is started. Enable this only when connected to the test simulator.
 
+config MYEMS_CONFIG_TARGET_SIM
+    bool "DP-WP4 simulation build (accept SIMULATION_ONLY / TEST_ONLY configuration)"
+    depends on !MYEMS_MODBUS_SELF_TEST
+    default n
+    help
+        Set only in sdkconfig.wp4_sim. The firmware then accepts the generated
+        configuration only if it was generated with --target sim, and refuses
+        to poll otherwise; a production build (this option off) accepts only
+        PRODUCTION configurations generated with --target prod
+        (DP-WP4 Design rule V-13). Simulation configurations use synthetic
+        register addresses: connect only the MyEMS simulator.
+
 config MYEMS_WP24_FAULT_INJECTION
     bool "Enable WP2.4 extended recovery test hooks"
     depends on MYEMS_MODBUS_SELF_TEST

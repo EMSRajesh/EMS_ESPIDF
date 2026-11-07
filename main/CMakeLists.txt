@@ -1,14 +1,19 @@
 idf_component_register(
     SRCS
         "app_main.c"
+        "ems_sched_core.c"
         "ems_poll_scheduler.c"
         "ems_acquisition.c"
         "modbus_self_test.c"
-    INCLUDE_DIRS "." "include"
+        "generated/ems_config_gen.c"
+    INCLUDE_DIRS "." "include" "generated"
     REQUIRES
         rs485_transport
         modbus_rtu_master
         esp_timer
         freertos
         ems_stack_diag
+        ems_profile
+        ems_measurement
+        ems_register_map
 )

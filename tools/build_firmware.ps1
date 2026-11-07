@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('SelfTest', 'Production')]
+    [ValidateSet('SelfTest', 'Production', 'Wp4Sim')]
     [string]$Mode,
 
     [string]$Port = 'COM11',
@@ -13,8 +13,9 @@ $ErrorActionPreference = 'Stop'
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $ProjectRoot
 
-$configFile = if ($Mode -eq 'SelfTest') { 'sdkconfig.selftest' } else { 'sdkconfig.production' }
-$buildDir = if ($Mode -eq 'SelfTest') { 'build_selftest' } else { 'build_production' }
+# Wp4Sim = production firmware + CONFIG_MYEMS_CONFIG_TARGET_SIM (DP-WP4 simulation configuration)
+$configFile = switch ($Mode) { 'SelfTest' { 'sdkconfig.selftest' } 'Wp4Sim' { 'sdkconfig.wp4_sim' } default { 'sdkconfig.production' } }
+$buildDir = switch ($Mode) { 'SelfTest' { 'build_selftest' } 'Wp4Sim' { 'build_wp4_sim' } default { 'build_production' } }
 $configPath = Join-Path $ProjectRoot $configFile
 
 if (-not (Test-Path $configPath)) {

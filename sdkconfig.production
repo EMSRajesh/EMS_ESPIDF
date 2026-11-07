@@ -974,6 +974,8 @@ CONFIG_PARTITION_TABLE_MD5=y
 # MyEMS Modbus RTU
 #
 # CONFIG_MYEMS_MODBUS_SELF_TEST is not set
+# default:
+# CONFIG_MYEMS_CONFIG_TARGET_SIM is not set
 # end of MyEMS Modbus RTU
 
 #

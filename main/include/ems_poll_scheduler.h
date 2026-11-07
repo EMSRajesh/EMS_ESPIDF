@@ -1,53 +1,64 @@
 #pragma once
 
+/*
+ * MyEMS poll scheduler task (DP-WP4 4E, milestone D5).
+ *
+ * FreeRTOS wrapper around the pure-C scheduler core (ems_sched_core.h). The
+ * task is the only owner of the scheduling state. Other tasks talk to it only
+ * through its message queue: completion feedback (acquisition) and device
+ * mode changes ONLINE/OFFLINE (acquisition, from D7).
+ */
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
 #include "modbus_rtu_master.h"
+#include "ems_sched_core.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define EMS_SCHEDULER_MAX_METERS 4U
-
 typedef struct ems_poll_scheduler *ems_poll_scheduler_handle_t;
 
 typedef struct {
-    const char *name;             /* Static name used only for diagnostics. */
-    uint8_t slave_addr;
-    uint8_t function_code;        /* Currently FC03 or FC04. */
-    uint16_t start_register;      /* Device-specific; verify meter manual. */
-    uint16_t register_count;
-    uint32_t poll_period_ms;
-    uint32_t initial_offset_ms;   /* Spreads requests across a shared bus. */
-    uint32_t timeout_ms;
-    uint8_t max_retries;
-} ems_meter_profile_t;
-
-typedef struct {
     modbus_master_handle_t master;
-    const ems_meter_profile_t *meters;
-    size_t meter_count;
-    UBaseType_t task_priority;
-    uint32_t task_stack_size;
-    uint16_t feedback_queue_length;
-    uint32_t submit_retry_delay_ms;
+    const ems_sched_plan_t *plan;   /* built with ems_sched_plan_build(); copied */
+    UBaseType_t task_priority;      /* 0 = 5                                    */
+    uint32_t task_stack_size;       /* bytes, 0 = 4096                           */
+    uint16_t feedback_queue_length; /* 0 = 16                                    */
+    uint32_t submit_retry_delay_ms; /* 0 = 250                                   */
 } ems_poll_scheduler_config_t;
 
-/* Starts the periodic scheduler. Meter profiles are copied; name pointers must
- * refer to static or otherwise long-lived strings. */
+typedef struct {
+    ems_sched_stats_t       core;
+    ems_sched_entry_stats_t entry[EMS_SCHED_MAX_ENTRIES];
+    uint8_t                 device_mode[EMS_SCHED_MAX_DEVICES];
+    uint8_t                 entry_count;
+    uint32_t                health_flags;     /* EMS_SCHED_HEALTH_*              */
+    uint32_t                queue_full;       /* messages refused: queue full    */
+} ems_poll_scheduler_stats_t;
+
 esp_err_t ems_poll_scheduler_start(const ems_poll_scheduler_config_t *config,
                                    ems_poll_scheduler_handle_t *out_handle);
 
-/* Called by the acquisition task after it consumes a terminal Modbus result.
- * Non-blocking: returns ESP_ERR_TIMEOUT if the feedback queue is full. */
-esp_err_t ems_poll_scheduler_notify_completion(
-    ems_poll_scheduler_handle_t handle,
-    uint32_t request_id);
+/* Acquisition: a terminal result for this request ID was consumed.
+ * Non-blocking: ESP_ERR_TIMEOUT if the queue is full (counted). */
+esp_err_t ems_poll_scheduler_notify_completion(ems_poll_scheduler_handle_t handle,
+                                               uint32_t request_id);
 
-/* Stops the scheduler task and releases its resources. Stop acquisition first. */
+/* Acquisition: device communication state changed (Design 9.4).
+ * Non-blocking: ESP_ERR_TIMEOUT if the queue is full (counted). */
+esp_err_t ems_poll_scheduler_set_device_mode(ems_poll_scheduler_handle_t handle,
+                                             uint8_t slot, ems_sched_dev_mode_t mode);
+
+/* Copy of the latest counters (updated by the task on every loop). */
+esp_err_t ems_poll_scheduler_get_stats(ems_poll_scheduler_handle_t handle,
+                                       ems_poll_scheduler_stats_t *out);
+
+/* Stops the scheduler task. Stop acquisition afterwards. */
 esp_err_t ems_poll_scheduler_stop(ems_poll_scheduler_handle_t handle);
 
 #ifdef __cplusplus

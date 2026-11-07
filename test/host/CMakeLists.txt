@@ -1,5 +1,5 @@
 # MyEMS host unit tests (DP-WP4: D1 ems_measurement, D2 ems_register_map,
-# D3 ems_profile + generated configuration tables).
+# D3 ems_profile + generated configuration tables, D5 poll scheduler core).
 #
 # Builds the pure-C DP-WP4 components with the PC's compiler and runs them
 # with the Unity framework that ships inside ESP-IDF:
@@ -81,6 +81,12 @@ target_include_directories(ems_profile PUBLIC "${EMS_PROFILE_DIR}/include")
 target_link_libraries(ems_profile PUBLIC ems_register_map)
 target_compile_options(ems_profile PRIVATE ${EMS_WARNINGS})
 
+# ------------------------------- scheduler core (4E, DP-WP4 D5), in main/ ---
+add_library(ems_sched_core STATIC "${MYEMS_ROOT}/main/ems_sched_core.c")
+target_include_directories(ems_sched_core PUBLIC "${MYEMS_ROOT}/main/include")
+target_link_libraries(ems_sched_core PUBLIC ems_profile)
+target_compile_options(ems_sched_core PRIVATE ${EMS_WARNINGS})
+
 # --------------------------------------------------------------- tests ---
 add_executable(test_ems_measurement
     test_main.c
@@ -117,8 +123,15 @@ foreach(cfg lab decoder)
     target_compile_options(test_ems_config_${cfg} PRIVATE ${EMS_WARNINGS})
 endforeach()
 
-set(EMS_HOST_TARGETS ems_measurement ems_register_map ems_profile
-    test_ems_measurement test_ems_register_map test_ems_config_lab test_ems_config_decoder)
+add_executable(test_ems_sched_core
+    test_main_sched.c
+    test_ems_sched_core.c)
+target_link_libraries(test_ems_sched_core PRIVATE ems_sched_core unity)
+target_compile_options(test_ems_sched_core PRIVATE ${EMS_WARNINGS})
+
+set(EMS_HOST_TARGETS ems_measurement ems_register_map ems_profile ems_sched_core
+    test_ems_measurement test_ems_register_map test_ems_config_lab test_ems_config_decoder
+    test_ems_sched_core)
 if(EMS_HOST_SANITIZE AND NOT MSVC)
     foreach(t ${EMS_HOST_TARGETS})
         target_compile_options(${t} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -137,3 +150,4 @@ add_test(NAME ems_measurement COMMAND test_ems_measurement)
 add_test(NAME ems_register_map COMMAND test_ems_register_map)
 add_test(NAME ems_config_lab COMMAND test_ems_config_lab)
 add_test(NAME ems_config_decoder COMMAND test_ems_config_decoder)
+add_test(NAME ems_sched_core COMMAND test_ems_sched_core)

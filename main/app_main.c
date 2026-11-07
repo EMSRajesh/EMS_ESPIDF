@@ -1,6 +1,10 @@
+#include <inttypes.h>
+
 #include "ems_acquisition.h"
-#include "ems_stack_diag.h"
+#include "ems_config_gen.h"
 #include "ems_poll_scheduler.h"
+#include "ems_sched_core.h"
+#include "ems_stack_diag.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -43,49 +47,74 @@ static void myems_self_test_task(void *arg)
 #endif
 
 
-/* --------------------------------------------------------------------------
- * DEMONSTRATION METER PROFILES
- * --------------------------------------------------------------------------
- * These are placeholder register settings to demonstrate two meters on one
- * shared RS-485 multidrop bus. Replace the slave IDs, function codes, starting
- * registers, register counts, baud rate and serial format using each meter's
- * actual manual. Register address zero is NOT universally voltage.
- *
- * The slave IDs must be unique on the same physical RS-485 bus. The initial
- * offsets spread the two polls apart so they do not become due simultaneously.
- */
-#define GRID_METER_SLAVE_ADDRESS       1U
-#define LOAD_METER_SLAVE_ADDRESS       2U
-#define DEMO_FUNCTION_CODE             0x03U
-#define DEMO_START_REGISTER            0U
-#define DEMO_REGISTER_COUNT            2U
-#define METER_POLL_PERIOD_MS           5000U
-
 #if !CONFIG_MYEMS_MODBUS_SELF_TEST
-static const ems_meter_profile_t s_meter_profiles[] = {
-    {
-        .name = "grid_meter",
-        .slave_addr = GRID_METER_SLAVE_ADDRESS,
-        .function_code = DEMO_FUNCTION_CODE,
-        .start_register = DEMO_START_REGISTER,
-        .register_count = DEMO_REGISTER_COUNT,
-        .poll_period_ms = METER_POLL_PERIOD_MS,
-        .initial_offset_ms = 500U,
-        .timeout_ms = 500U,
-        .max_retries = 1U
-    },
-    {
-        .name = "load_meter",
-        .slave_addr = LOAD_METER_SLAVE_ADDRESS,
-        .function_code = DEMO_FUNCTION_CODE,
-        .start_register = DEMO_START_REGISTER,
-        .register_count = DEMO_REGISTER_COUNT,
-        .poll_period_ms = METER_POLL_PERIOD_MS,
-        .initial_offset_ms = 3000U,
-        .timeout_ms = 500U,
-        .max_retries = 1U
+/* --------------------------------------------------------------------------
+ * DP-WP4 CONFIGURATION
+ * --------------------------------------------------------------------------
+ * Devices, poll groups and bus settings come from the generated tables in
+ * main/generated/ (tools/profile/myems_profile_tool.py). The 09_057 demo
+ * meter profiles are gone. Full activation (structural re-validation, events)
+ * is milestone D7; D5 checks the CRC and the build target and builds the
+ * scheduler plan. On any failure nothing is polled.
+ */
+#if CONFIG_MYEMS_CONFIG_TARGET_SIM
+#define MYEMS_CONFIG_TARGET_NAME "sim"
+#define MYEMS_CONFIG_TARGET_VALUE EMS_TARGET_SIM
+#else
+#define MYEMS_CONFIG_TARGET_NAME "prod"
+#define MYEMS_CONFIG_TARGET_VALUE EMS_TARGET_PROD
+#endif
+
+static ems_sched_plan_t s_plan;
+
+static bool myems_config_accept(const ems_config_build_t *cfg)
+{
+    ESP_LOGI(TAG, "CONFIG site=%s target=%s classification=%s crc=0x%08" PRIX32 " devices=%u",
+             cfg->site_id, cfg->target == EMS_TARGET_SIM ? "sim" : "prod",
+             ems_classification_name(cfg->classification), cfg->crc32, (unsigned)cfg->device_count);
+    ESP_LOGI(TAG, "CONFIG inputs: %s (sha256 %s, tool %s, umd %s)",
+             cfg->inputs_summary, cfg->inputs_sha256, cfg->tool_version, cfg->umd_version);
+
+    const uint32_t crc = ems_config_crc32(cfg);
+    if (crc != cfg->crc32) {
+        ESP_LOGE(TAG, "CONFIG REJECTED: CRC 0x%08" PRIX32 " does not match stored 0x%08" PRIX32,
+                 crc, cfg->crc32);
+        return false;
     }
-};
+    /* V-13 (firmware side): a simulation build accepts only sim tables and a
+     * production build only production tables. */
+    if (cfg->target != MYEMS_CONFIG_TARGET_VALUE ||
+        (MYEMS_CONFIG_TARGET_VALUE == EMS_TARGET_PROD && cfg->classification != EMS_CLASS_PRODUCTION)) {
+        ESP_LOGE(TAG, "CONFIG REJECTED: %s configuration (target %s) in a CONFIG_TARGET=%s build",
+                 ems_classification_name(cfg->classification),
+                 cfg->target == EMS_TARGET_SIM ? "sim" : "prod", MYEMS_CONFIG_TARGET_NAME);
+        return false;
+    }
+    if (cfg->bus_count < 1U) {
+        ESP_LOGE(TAG, "CONFIG REJECTED: no bus");
+        return false;
+    }
+    const ems_sched_plan_status_t ps = ems_sched_plan_build(cfg, &s_plan);
+    if (ps != EMS_SCHED_PLAN_OK || s_plan.entry_count == 0U) {
+        ESP_LOGE(TAG, "CONFIG REJECTED: scheduler plan %s (%u entries)",
+                 ems_sched_plan_status_name(ps), (unsigned)s_plan.entry_count);
+        return false;
+    }
+    if (cfg->classification != EMS_CLASS_PRODUCTION) {
+        ESP_LOGW(TAG, "SIMULATION/TEST CONFIGURATION: synthetic register addresses; "
+                      "connect only the MyEMS simulator, never a real meter");
+    }
+    return true;
+}
+
+static uart_parity_t myems_uart_parity(uint8_t parity)
+{
+    switch (parity) {
+    case EMS_PARITY_EVEN: return UART_PARITY_EVEN;
+    case EMS_PARITY_ODD:  return UART_PARITY_ODD;
+    default:              return UART_PARITY_DISABLE;
+    }
+}
 #endif /* !CONFIG_MYEMS_MODBUS_SELF_TEST */
 
 void app_main(void)
@@ -93,7 +122,11 @@ void app_main(void)
 #if CONFIG_MYEMS_MODBUS_SELF_TEST
     ESP_LOGW(TAG, "BUILD_MODE=SELF_TEST; connect an RS485 simulator, not a live meter");
 #else
-    ESP_LOGI(TAG, "BUILD_MODE=PRODUCTION");
+    ESP_LOGI(TAG, "BUILD_MODE=PRODUCTION CONFIG_TARGET=%s", MYEMS_CONFIG_TARGET_NAME);
+    if (!myems_config_accept(&ems_config_build)) {
+        ESP_LOGE(TAG, "No polling started (device stays READY). Fix the configuration or build mode.");
+        return;
+    }
 #endif
 
     esp_err_t err;
@@ -117,6 +150,22 @@ void app_main(void)
     transport_config.stop_bits = UART_STOP_BITS_1;
 #if CONFIG_MYEMS_WP24_EXTENDED_TEST == 3 || CONFIG_MYEMS_WP24_EXTENDED_TEST == 4
     transport_config.recovery_timeout_ms = 500U;
+#endif
+#if !CONFIG_MYEMS_MODBUS_SELF_TEST
+    /* Bus settings from the generated bus table (one onboard bus: bus 0). */
+    {
+        const ems_cfg_bus_t *bus = &ems_config_build.buses[0];
+        transport_config.uart_num = (uart_port_t)bus->uart_num;
+        transport_config.tx_gpio = bus->tx_gpio;
+        transport_config.rx_gpio = bus->rx_gpio;
+        transport_config.rts_gpio = bus->rts_gpio;
+        transport_config.baud_rate = bus->baud;
+        transport_config.parity = myems_uart_parity(bus->parity);
+        transport_config.stop_bits = (bus->stop_bits == 2U) ? UART_STOP_BITS_2 : UART_STOP_BITS_1;
+        ESP_LOGI(TAG, "bus %s: UART%u TX%u RX%u RTS%u %" PRIu32 " baud parity=%u stop=%u",
+                 bus->bus_id, (unsigned)bus->uart_num, (unsigned)bus->tx_gpio, (unsigned)bus->rx_gpio,
+                 (unsigned)bus->rts_gpio, bus->baud, (unsigned)bus->parity, (unsigned)bus->stop_bits);
+    }
 #endif
 
     err = rs485_open(&transport_config, &transport);
@@ -178,14 +227,12 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(60000U));
     }
 #else
-    /* 3. Start the scheduler. It submits periodic requests but never waits for
-     * a meter response. If a meter already has a request in flight, the next
-     * polling occurrence is skipped instead of flooding the request queue.
-     */
+    /* 3. Start the scheduler. It owns poll timing: one entry per (device, poll
+     * group), at most one request in flight per device, never waits for a
+     * response itself (Design 9.2). */
     const ems_poll_scheduler_config_t scheduler_config = {
         .master = master,
-        .meters = s_meter_profiles,
-        .meter_count = sizeof(s_meter_profiles) / sizeof(s_meter_profiles[0]),
+        .plan = &s_plan,
         .task_priority = 5U,
         .task_stack_size = 4096U,
         .feedback_queue_length = 16U,
@@ -200,15 +247,14 @@ void app_main(void)
         return;
     }
 
-    /* 4. Start a dedicated acquisition task. It is the sole consumer of the
-     * Modbus completion queue, processes results, and feeds terminal request IDs
-     * back to the scheduler so each meter's in-flight slot can be released.
-     */
+    /* 4. Start the acquisition task: sole consumer of the completion queue;
+     * routes each result by request ID and feeds every terminal request ID
+     * back to the scheduler. */
     const ems_acquisition_config_t acquisition_config = {
         .master = master,
         .scheduler = scheduler,
-        .meters = s_meter_profiles,
-        .meter_count = sizeof(s_meter_profiles) / sizeof(s_meter_profiles[0]),
+        .plan = &s_plan,
+        .config = &ems_config_build,
         .task_priority = 6U,
         .task_stack_size = 4096U,
         .completion_wait_ms = 100U
@@ -223,18 +269,31 @@ void app_main(void)
         return;
     }
 
-    ESP_LOGI(TAG, "MyEMS asynchronous RS-485/Modbus application started");
-    ESP_LOGI(TAG, "One shared RS-485 bus; grid and load meters are polled independently");
-    ESP_LOGI(TAG, "Poll period=%u ms per meter; configure profiles from actual meter manuals",
-             METER_POLL_PERIOD_MS);
+    ESP_LOGI(TAG, "MyEMS DP-WP4 polling started: %u devices, %u poll entries",
+             (unsigned)s_plan.device_count, (unsigned)s_plan.entry_count);
 
-    /* app_main deliberately does not contain a polling loop. The scheduler,
-     * Modbus master, acquisition and transport tasks run independently under
-     * FreeRTOS. Keep this task alive with a long sleep and let the other tasks
-     * perform the actual work. */
-    (void)acquisition;
+    /* app_main does not poll. Every 60 s it prints the scheduler and
+     * acquisition counters (diagnostics proper come in D7). */
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(60000U));
+        ems_poll_scheduler_stats_t ss;
+        ems_acquisition_stats_t as;
+        if (ems_poll_scheduler_get_stats(scheduler, &ss) == ESP_OK &&
+            ems_acquisition_get_stats(acquisition, &as) == ESP_OK) {
+            uint32_t submitted = 0U, skipped = 0U, rejected = 0U;
+            for (uint8_t e = 0; e < ss.entry_count; e++) {
+                submitted += ss.entry[e].submitted;
+                skipped += ss.entry[e].skipped;
+                rejected += ss.entry[e].rejected;
+            }
+            ESP_LOGI(TAG, "STATS sched: submitted=%" PRIu32 " skipped=%" PRIu32 " rejected=%" PRIu32
+                          " guard_expired=%" PRIu32 " fb_unmatched=%" PRIu32 " fb_late=%" PRIu32
+                          " health=0x%02" PRIX32 " | acq: results=%" PRIu32 " ok=%" PRIu32
+                          " failed=%" PRIu32 " routing_errors=%" PRIu32,
+                     submitted, skipped, rejected, ss.core.guard_expired, ss.core.feedback_unmatched,
+                     ss.core.feedback_late, ss.health_flags, as.results, as.ok, as.failed,
+                     as.routing_errors);
+        }
     }
 #endif
 }

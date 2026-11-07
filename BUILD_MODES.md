@@ -48,6 +48,22 @@ Build and flash:
 .\tools\build_firmware.ps1 -Mode Production -Port COM11 -Flash
 ```
 
+## Build DP-WP4 simulation firmware
+
+`sdkconfig.wp4_sim` is `sdkconfig.production` plus
+`CONFIG_MYEMS_CONFIG_TARGET_SIM=y`. It polls the devices of the generated
+configuration (`main/generated/`, made with `--target sim`) and must only be
+connected to the MyEMS AC meter simulator (`tools/wp4/myems_ac_meter_sim.py`).
+
+```powershell
+.\tools\build_firmware.ps1 -Mode Wp4Sim -Port COM11 -Monitor
+```
+
+A production build refuses a simulation configuration (and the other way
+round): the boot log then shows `CONFIG REJECTED` and nothing is polled. Since
+DP-WP4 D5 this is the expected result for `-Mode Production`, because only
+simulation configurations exist so far.
+
 ## Direct ESP-IDF commands
 
 The PowerShell helper is a convenience wrapper. Equivalent direct commands:
@@ -55,6 +71,7 @@ The PowerShell helper is a convenience wrapper. Equivalent direct commands:
 ```powershell
 idf.py -B build_selftest -D SDKCONFIG=sdkconfig.selftest build
 idf.py -B build_production -D SDKCONFIG=sdkconfig.production build
+idf.py -B build_wp4_sim -D SDKCONFIG=sdkconfig.wp4_sim build
 ```
 
 Flash a previously built mode using its matching build directory:
