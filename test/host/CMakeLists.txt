@@ -169,13 +169,14 @@ add_executable(test_ems_d8
 target_link_libraries(test_ems_d8 PRIVATE ems_bus_health unity)
 target_compile_options(test_ems_d8 PRIVATE ${EMS_WARNINGS})
 
-# Per-site firmware tables (D9 build modes Wp4Sim2Dev, Wp4Ratio): one executable per site.
-foreach(site 2dev ct200)
-    if(site STREQUAL "2dev")
-        set(site_dir "${MYEMS_ROOT}/main/generated_sites/lab_bench_2dev")
-    else()
-        set(site_dir "${MYEMS_ROOT}/main/generated_sites/lab_ratio_ct200")
-    endif()
+# Per-site firmware tables (D9 build modes Wp4Sim2Dev, Wp4Ratio; DP-WP5 Wp5Dc, Wp5Mixed):
+# one executable per site.
+set(site_dir_2dev   "lab_bench_2dev")
+set(site_dir_ct200  "lab_ratio_ct200")
+set(site_dir_dc     "lab_dc_bench")
+set(site_dir_mixed  "lab_mixed")
+foreach(site 2dev ct200 dc mixed)
+    set(site_dir "${MYEMS_ROOT}/main/generated_sites/${site_dir_${site}}")
     string(TOUPPER "${site}" SITE_UPPER)
     add_executable(test_ems_config_site_${site}
         test_main_config_site.c
@@ -191,7 +192,7 @@ endforeach()
 set(EMS_HOST_TARGETS ems_measurement ems_register_map ems_profile ems_sched_core ems_diag ems_bus_health
     test_ems_measurement test_ems_register_map test_ems_config_lab test_ems_config_decoder
     test_ems_sched_core test_ems_acq_core test_ems_d7 test_ems_d8
-    test_ems_config_site_2dev test_ems_config_site_ct200)
+    test_ems_config_site_2dev test_ems_config_site_ct200 test_ems_config_site_dc test_ems_config_site_mixed)
 if(EMS_HOST_SANITIZE AND NOT MSVC)
     foreach(t ${EMS_HOST_TARGETS})
         target_compile_options(${t} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -216,3 +217,5 @@ add_test(NAME ems_d7 COMMAND test_ems_d7)
 add_test(NAME ems_d8 COMMAND test_ems_d8)
 add_test(NAME ems_config_site_2dev COMMAND test_ems_config_site_2dev)
 add_test(NAME ems_config_site_ct200 COMMAND test_ems_config_site_ct200)
+add_test(NAME ems_config_site_dc COMMAND test_ems_config_site_dc)
+add_test(NAME ems_config_site_mixed COMMAND test_ems_config_site_mixed)

@@ -1,7 +1,7 @@
 /*
  * GENERATED FILE - DO NOT EDIT.
  * Source:    config/umd/umd_v1.json
- * UMD:       1.1.0  (sha256 d93035d4ea0038ca)
+ * UMD:       1.1.0  (sha256 a34247c496d3c0c0)
  * Generator: tools/profile/umd_gen.py 1.1.0
  * Regenerate: python tools/profile/umd_gen.py
  */
@@ -11,8 +11,8 @@
 #include <stdint.h>
 
 #define EMS_UMD_VERSION "1.1.0"
-#define EMS_UMD_SHA256_PREFIX "d93035d4ea0038ca"
-#define EMS_PARAM_COUNT 14u
+#define EMS_UMD_SHA256_PREFIX "a34247c496d3c0c0"
+#define EMS_PARAM_COUNT 19u
 
 /* Domain codes: high byte of a runtime ID. */
 #define EMS_DOMAIN_DEV 0x00u
@@ -37,5 +37,10 @@
 #define EMS_PARAM_AC_FREQUENCY            ((uint16_t)0x0130u)
 #define EMS_PARAM_AC_ENERGY_IMPORT_ACTIVE ((uint16_t)0x0140u)
 #define EMS_PARAM_AC_ENERGY_EXPORT_ACTIVE ((uint16_t)0x0141u)
+#define EMS_PARAM_DC_VOLTAGE              ((uint16_t)0x0201u)
+#define EMS_PARAM_DC_CURRENT              ((uint16_t)0x0211u)
+#define EMS_PARAM_DC_POWER                ((uint16_t)0x0221u)
+#define EMS_PARAM_DC_ENERGY_IMPORT        ((uint16_t)0x0240u)
+#define EMS_PARAM_DC_ENERGY_EXPORT        ((uint16_t)0x0241u)
 
 #endif /* EMS_PARAM_IDS_H */

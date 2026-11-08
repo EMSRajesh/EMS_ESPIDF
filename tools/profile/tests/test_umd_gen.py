@@ -35,6 +35,12 @@ EXPECTED = {
     "ac.frequency": (0x0130, "Hz"),
     "ac.energy.import.active": (0x0140, "kWh"),
     "ac.energy.export.active": (0x0141, "kWh"),
+    # DP-WP5 Design v1.0 Section 4.2
+    "dc.voltage": (0x0201, "V"),
+    "dc.current": (0x0211, "A"),
+    "dc.power": (0x0221, "kW"),
+    "dc.energy.import": (0x0240, "kWh"),
+    "dc.energy.export": (0x0241, "kWh"),
 }
 
 
@@ -52,7 +58,8 @@ class TestDictionaryContent(unittest.TestCase):
 
     def test_counters_are_energy_only(self):
         counters = {p.name for p in umd_gen.validate(load()) if p.value_type == "counter"}
-        self.assertEqual(counters, {"ac.energy.import.active", "ac.energy.export.active"})
+        self.assertEqual(counters, {"ac.energy.import.active", "ac.energy.export.active",
+                                    "dc.energy.import", "dc.energy.export"})
 
 
 class TestValidationRules(unittest.TestCase):

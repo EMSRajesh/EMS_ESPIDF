@@ -26,7 +26,13 @@
     "active_energy_export": ["ac.energy.export.active"],
     "device_status":        ["dev.status.code"],
     "power_quality":        [],
-    "demand_measurement":   []
+    "demand_measurement":   [],
+    "dc_voltage":           ["dc.voltage"],
+    "dc_current":           ["dc.current"],
+    "dc_power":             ["dc.power"],
+    "dc_energy_import":     ["dc.energy.import"],
+    "dc_energy_export":     ["dc.energy.export"],
+    "dc_shunt_temperature": []
   },
   "parameters": [
     { "id": "dev.status.code",         "runtime_id": "0x0001", "unit": "-",    "value_type": "enum",    "role": "status",        "description": "Raw device status word" },
@@ -42,7 +48,12 @@
     { "id": "ac.power.factor.total",   "runtime_id": "0x0124", "unit": "1",    "value_type": "float",   "role": "power.factor",  "description": "Total power factor, sign follows active power" },
     { "id": "ac.frequency",            "runtime_id": "0x0130", "unit": "Hz",   "value_type": "float",   "role": "frequency",     "description": "System frequency" },
     { "id": "ac.energy.import.active", "runtime_id": "0x0140", "unit": "kWh",  "value_type": "counter", "role": "energy.import", "description": "Cumulative imported active energy" },
-    { "id": "ac.energy.export.active", "runtime_id": "0x0141", "unit": "kWh",  "value_type": "counter", "role": "energy.export", "description": "Cumulative exported active energy" }
+    { "id": "ac.energy.export.active", "runtime_id": "0x0141", "unit": "kWh",  "value_type": "counter", "role": "energy.export", "description": "Cumulative exported active energy" },
+    { "id": "dc.voltage",              "runtime_id": "0x0201", "unit": "V",    "value_type": "float",   "role": "voltage",        "description": "DC bus voltage at the meter" },
+    { "id": "dc.current",              "runtime_id": "0x0211", "unit": "A",    "value_type": "float",   "role": "current.signed", "description": "DC current, positive in the reference direction" },
+    { "id": "dc.power",                "runtime_id": "0x0221", "unit": "kW",   "value_type": "float",   "role": "power.active",   "description": "DC power, positive in the reference direction" },
+    { "id": "dc.energy.import",        "runtime_id": "0x0240", "unit": "kWh",  "value_type": "counter", "role": "energy.import",  "description": "Cumulative DC energy in the reference direction" },
+    { "id": "dc.energy.export",        "runtime_id": "0x0241", "unit": "kWh",  "value_type": "counter", "role": "energy.export",  "description": "Cumulative DC energy against the reference direction" }
   ],
   "retired": []
 }

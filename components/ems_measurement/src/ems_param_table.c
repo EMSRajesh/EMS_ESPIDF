@@ -1,7 +1,7 @@
 /*
  * GENERATED FILE - DO NOT EDIT.
  * Source:    config/umd/umd_v1.json
- * UMD:       1.1.0  (sha256 d93035d4ea0038ca)
+ * UMD:       1.1.0  (sha256 a34247c496d3c0c0)
  * Generator: tools/profile/umd_gen.py 1.1.0
  */
 #include "ems_measurement.h"
@@ -23,6 +23,11 @@ const ems_param_info_t ems_param_table[EMS_PARAM_COUNT] = {
     { EMS_PARAM_AC_FREQUENCY, EMS_UNIT_HZ, EMS_VT_FLOAT, "ac.frequency", "System frequency" },
     { EMS_PARAM_AC_ENERGY_IMPORT_ACTIVE, EMS_UNIT_KWH, EMS_VT_COUNTER, "ac.energy.import.active", "Cumulative imported active energy" },
     { EMS_PARAM_AC_ENERGY_EXPORT_ACTIVE, EMS_UNIT_KWH, EMS_VT_COUNTER, "ac.energy.export.active", "Cumulative exported active energy" },
+    { EMS_PARAM_DC_VOLTAGE, EMS_UNIT_V, EMS_VT_FLOAT, "dc.voltage", "DC bus voltage at the meter" },
+    { EMS_PARAM_DC_CURRENT, EMS_UNIT_A, EMS_VT_FLOAT, "dc.current", "DC current, positive in the reference direction" },
+    { EMS_PARAM_DC_POWER, EMS_UNIT_KW, EMS_VT_FLOAT, "dc.power", "DC power, positive in the reference direction" },
+    { EMS_PARAM_DC_ENERGY_IMPORT, EMS_UNIT_KWH, EMS_VT_COUNTER, "dc.energy.import", "Cumulative DC energy in the reference direction" },
+    { EMS_PARAM_DC_ENERGY_EXPORT, EMS_UNIT_KWH, EMS_VT_COUNTER, "dc.energy.export", "Cumulative DC energy against the reference direction" },
 };
 
 const size_t ems_param_table_len = EMS_PARAM_COUNT;

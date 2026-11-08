@@ -3,7 +3,7 @@
  * Generator: tools/profile/myems_profile_tool.py 1.1.0
  * Site:      lab_bench.site.json (LAB_BENCH_01), target sim
  * Inputs:    site:LAB_BENCH_01; profile:AC_METER_3PH_SIM@1.1.0; map:MYEMS_SIM_ACMETER_3PH@1.1.0; umd:1.1.0
- * Inputs sha256 (first 16): 5073f2769fdc3344
+ * Inputs sha256 (first 16): 43a0db4cacee9cc2
  * Config CRC32: 0x4B8B5924   Classification: SIMULATION_ONLY
  * Regenerate: python tools/profile/myems_profile_tool.py generate --site config/site/lab_bench.site.json --target sim
  * SIMULATION/TEST CONFIGURATION: synthetic register addresses, never use with real equipment.
@@ -101,7 +101,7 @@ const ems_config_build_t ems_config_build = {
     .site_id = "LAB_BENCH_01",
     .tool_version = "1.1.0",
     .umd_version = "1.1.0",
-    .inputs_sha256 = "5073f2769fdc3344",
+    .inputs_sha256 = "43a0db4cacee9cc2",
     .inputs_summary = "site:LAB_BENCH_01; profile:AC_METER_3PH_SIM@1.1.0; map:MYEMS_SIM_ACMETER_3PH@1.1.0; umd:1.1.0",
     .buses = s_buses, .maps = s_maps, .profiles = s_profiles, .devices = s_devices,
     .crc32 = 0x4B8B5924u,

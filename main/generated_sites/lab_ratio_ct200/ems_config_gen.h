@@ -3,7 +3,7 @@
  * Generator: tools/profile/myems_profile_tool.py 1.1.0
  * Site:      lab_ratio_ct200.site.json (LAB_RATIO_CT200), target sim
  * Inputs:    site:LAB_RATIO_CT200; profile:AC_METER_3PH_SIM@1.1.0; map:MYEMS_SIM_ACMETER_3PH@1.1.0; umd:1.1.0
- * Inputs sha256 (first 16): dc1ca2e89823b73f
+ * Inputs sha256 (first 16): 56b452baf6aa967f
  * Config CRC32: 0x5A2CC286   Classification: SIMULATION_ONLY
  * Regenerate: python tools/profile/myems_profile_tool.py generate --site config/site/lab_ratio_ct200.site.json --target sim --out-dir main/generated_sites/lab_ratio_ct200
  * SIMULATION/TEST CONFIGURATION: synthetic register addresses, never use with real equipment.

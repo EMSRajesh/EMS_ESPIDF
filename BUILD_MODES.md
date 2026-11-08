@@ -73,6 +73,26 @@ simulator with the matching site and checks that the configuration CRCs agree.
 .\tools\build_firmware.ps1 -Mode Wp4Ratio -Port COM11 -Flash     # suite ratio
 ```
 
+## Build DP-WP5 DC meter firmware
+
+DP-WP5 adds a simulated DC meter as data only (profile, map, site files and
+generated tables). The build modes differ from `Wp4Sim` / `Wp4Esc` only in
+`CONFIG_MYEMS_SIM_SITE_DIR`:
+
+| Mode | sdkconfig | Site (tables) | Config CRC |
+|---|---|---|---|
+| `Wp5Dc` | `sdkconfig.wp5_dc` | `lab_dc_bench`: DC meter, slave 3 | 0xCC22DC64 |
+| `Wp5Mixed` | `sdkconfig.wp5_mixed` | `lab_mixed`: AC meter slave 1 + DC meter slave 3 | 0xC04114E4 |
+| `Wp5MixedEsc` | `sdkconfig.wp5_mixed_esc` | `lab_mixed`, plus the escalation test hook of `Wp4Esc` | 0xC04114E4 |
+
+The boot banner shows the site ID and the configuration CRC; the simulator must
+be started with the same site file.
+
+```powershell
+.\tools\build_firmware.ps1 -Mode Wp5Dc -Port COM11 -Flash
+python tools/wp4/myems_ac_meter_sim.py --site config/site/lab_dc_bench.site.json --port COM12
+```
+
 ## Build DP-WP4 escalation test firmware (D8)
 
 `sdkconfig.wp4_esc` is `sdkconfig.wp4_sim` plus `CONFIG_MYEMS_WP4_ESC_TEST=y`

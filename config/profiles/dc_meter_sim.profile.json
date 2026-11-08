@@ -1,0 +1,40 @@
+{
+  "$schema": "../schema/profile.schema.json",
+  "schema": "myems.profile/1.2",
+  "profile_id": "DC_METER_SIM",
+  "profile_version": "1.0.0",
+  "classification": "SIMULATION_ONLY",
+  "device_type": "DC_METER",
+  "description": "Simulated DC meter (battery string, PV DC bus or DC feeder). DP-WP5 Design Section 6.1. Current and power are positive in the reference direction (from the DC bus into the monitored branch).",
+  "vendor": {
+    "vendor_id": "MYEMS_SIMULATOR",
+    "model_number": "SIM_DCMETER_V1",
+    "protocol_document_reference": "MYEMS_SIMULATED_PROTOCOL_V1"
+  },
+  "protocol": "MODBUS_RTU",
+  "register_map_ref": {
+    "map_id": "MYEMS_SIM_DCMETER",
+    "map_version": "1.0.0"
+  },
+  "comm_defaults": {
+    "timeout_ms": 500,
+    "max_retries": 1,
+    "comm_lost_threshold": 2,
+    "probe_group": "status",
+    "probe_interval_ms": 30000
+  },
+  "capabilities": {
+    "dc_voltage": true,
+    "dc_current": true,
+    "dc_power": true,
+    "dc_energy_import": true,
+    "dc_energy_export": true,
+    "device_status": true,
+    "dc_shunt_temperature": false
+  },
+  "conventions": {
+    "power_sign": "IMPORT_POSITIVE",
+    "pf_sign": "NOT_APPLICABLE",
+    "ratio_handling": "METER_REPORTS_PRIMARY"
+  }
+}

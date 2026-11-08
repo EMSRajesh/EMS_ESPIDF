@@ -1,0 +1,134 @@
+{
+  "$schema": "../schema/regmap.schema.json",
+  "schema": "myems.regmap/1.2",
+  "map_id": "MYEMS_SIM_DCMETER",
+  "map_version": "1.0.0",
+  "classification": "SIMULATION_ONLY",
+  "note": "Synthetic PDU addresses for the MyEMS simulator only. NOT manufacturer addresses; never use with a physical meter. DP-WP5 Design Section 6.2; test vectors = WP5 Test Spec 2.1 (NORMAL image).",
+  "poll_groups": [
+    {
+      "name": "measurements",
+      "function_code": 4,
+      "start": 0,
+      "count": 6,
+      "interval_ms": 4000,
+      "offset_ms": 300,
+      "stale_timeout_ms": 9000
+    },
+    {
+      "name": "energy",
+      "function_code": 4,
+      "start": 100,
+      "count": 4,
+      "interval_ms": 10000,
+      "offset_ms": 1200,
+      "stale_timeout_ms": 21000
+    },
+    {
+      "name": "status",
+      "function_code": 3,
+      "start": 200,
+      "count": 1,
+      "interval_ms": 30000,
+      "offset_ms": 2200,
+      "stale_timeout_ms": 61000
+    }
+  ],
+  "mappings": [
+    {
+      "mapping_id": 1,
+      "param": "dc.voltage",
+      "group": "measurements",
+      "address": 0,
+      "type": "FLOAT32",
+      "order": "ABCD",
+      "scale": 1,
+      "offset": 0.0,
+      "unit": "V",
+      "min": 0,
+      "max": 1500,
+      "flags": [],
+      "test_vector": "N1 800.0 V: 4448 0000",
+      "sim_out_of_range": 1800.0
+    },
+    {
+      "mapping_id": 2,
+      "param": "dc.current",
+      "group": "measurements",
+      "address": 2,
+      "type": "INT32",
+      "order": "CDAB",
+      "scale": 0.001,
+      "offset": 0.0,
+      "unit": "A",
+      "min": -2000,
+      "max": 2000,
+      "flags": [],
+      "test_vector": "N2 125.0 A: E848 0001"
+    },
+    {
+      "mapping_id": 3,
+      "param": "dc.power",
+      "group": "measurements",
+      "address": 4,
+      "type": "FLOAT32",
+      "order": "CDAB",
+      "scale": 1,
+      "offset": 0.0,
+      "unit": "kW",
+      "min": -3000,
+      "max": 3000,
+      "flags": [],
+      "test_vector": "N3 100.0 kW: 0000 42C8"
+    },
+    {
+      "mapping_id": 4,
+      "param": "dc.energy.import",
+      "group": "energy",
+      "address": 100,
+      "type": "UINT32",
+      "order": "CDAB",
+      "scale": 0.01,
+      "offset": 0.0,
+      "unit": "kWh",
+      "min": 0,
+      "max": 43000000,
+      "flags": [
+        "COUNTER"
+      ],
+      "test_vector": "N4 2500.0 kWh: D090 0003"
+    },
+    {
+      "mapping_id": 5,
+      "param": "dc.energy.export",
+      "group": "energy",
+      "address": 102,
+      "type": "UINT32",
+      "order": "CDAB",
+      "scale": 0.01,
+      "offset": 0.0,
+      "unit": "kWh",
+      "min": 0,
+      "max": 43000000,
+      "flags": [
+        "COUNTER"
+      ],
+      "test_vector": "N5 0.0 kWh: 0000 0000"
+    },
+    {
+      "mapping_id": 6,
+      "param": "dev.status.code",
+      "group": "status",
+      "address": 200,
+      "type": "UINT16",
+      "order": "AB",
+      "scale": 1,
+      "offset": 0.0,
+      "unit": "-",
+      "min": 0,
+      "max": 65535,
+      "flags": [],
+      "test_vector": "N6 0 -: 0000"
+    }
+  ]
+}

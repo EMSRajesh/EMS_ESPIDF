@@ -6,8 +6,8 @@ Specifications: `docs/DP-WP5_Design_Specification_v1.0.md`, `docs/DP-WP5_Develop
 | Milestone | Content | State |
 |---|---|---|
 | M0 | D9 committed (c987e4e); D9 HIL run deferred by the user | Done |
-| M1 | Framework generalisation, AC data only | Delivered, to be committed |
-| M2 | DC meter data only | – |
+| M1 | Framework generalisation, AC data only | Done, tag `dp-wp5-m1` (635edd4) |
+| M2 | DC meter data only | Delivered, to be committed |
 | M3 | Host decode and simulator (DC) | – |
 | M4 | HIL, DC meter alone | – |
 | M5 | HIL, mixed AC + DC site | – |
@@ -60,3 +60,62 @@ cmake -S test/host -B build_host; cmake --build build_host; ctest --test-dir bui
 
 No HIL run is needed for M1: the firmware tables have the same CRCs and the
 simulator output is byte-identical. The D9 HIL evidence (`run_d9_all.ps1`) stays valid on this commit.
+
+## M2 — DC meter as data only
+
+### What was added
+
+| File | Kind | Content |
+|---|---|---|
+| `config/umd/umd_v1.json` | data | 5 DC parameters (0x0201 voltage, 0x0211 current, 0x0221 power, 0x0240/0x0241 energy) with roles; 6 DC capabilities (`dc_shunt_temperature` reserved, empty) |
+| `config/profiles/dc_meter_sim.profile.json` | data | `DC_METER_SIM` 1.0.0, profile schema 1.2, `pf_sign: NOT_APPLICABLE`, `METER_REPORTS_PRIMARY` |
+| `config/maps/myems_sim_dcmeter.map.json` | data | `MYEMS_SIM_DCMETER` 1.0.0, regmap 1.2: FC04 `measurements` 0..5 (FLOAT32 ABCD, INT32 CDAB, FLOAT32 CDAB), FC04 `energy` 100..103 (UINT32 CDAB counters), FC03 `status` 200; test vectors = Test Spec 2.1; `sim_out_of_range` 1800 V |
+| `config/site/lab_dc_bench.site.json`, `lab_mixed.site.json` | data | DC meter slave 3; AC slave 1 + DC slave 3 |
+| `main/generated_sites/lab_dc_bench/`, `lab_mixed/` | generated | CRC 0xCC22DC64, 0xC04114E4 |
+| `components/ems_measurement/include/ems_param_ids.h`, `src/ems_param_table.c` | generated (`umd_gen.py`) | 19 parameters; existing IDs unchanged |
+| `main/generated`, `main/generated_sites/lab_bench_2dev`, `lab_ratio_ct200`, `test/host/generated/decoder_test` | generated | Inputs hash only (the dictionary is an input); CRCs unchanged |
+| `sdkconfig.wp5_dc`, `sdkconfig.wp5_mixed`, `sdkconfig.wp5_mixed_esc` | build config | `wp4_sim` / `wp4_esc` with another `CONFIG_MYEMS_SIM_SITE_DIR` |
+| `tools/build_firmware.ps1`, `BUILD_MODES.md` | build tooling | Modes `Wp5Dc`, `Wp5Mixed`, `Wp5MixedEsc` |
+| `test/host/CMakeLists.txt`, `test_ems_config_site.c`, `test_ems_dictionary.c` | tests | Executables `test_ems_config_site_dc`, `_mixed` (DC tables: FC04 groups, runtime IDs, no ratio flags, counter limit 3000 kW); DC entries in the dictionary test |
+| `tools/profile/tests/test_umd_gen.py`, `test_wp5_m2.py` (new) | tests | DC dictionary entries; GEN5-005…009, CFG5-001…008, UMD5-001/002 |
+
+No file under `main/` or `components/` other than generated files, and no tool or
+simulator source, was changed: the DC meter is served by the simulator straight
+from the map (`--dump` shows the Test Spec 2.1 words).
+
+### Exit evidence (host, 9 Nov 2026)
+
+| Check | Result |
+|---|---|
+| `python -m unittest discover -s tools/profile/tests` | 110 tests OK (92 + 18 new) |
+| `python -m unittest discover -s tools/wp4/tests` | 165 tests OK |
+| `ctest` (host C) | 12/12 (2 new site executables) |
+| `umd-check` | OK, UMD 1.1.0, 19 parameters |
+| GEN5-007 budget, `lab_mixed` | Nominal 6.4 %, all offline 20.8 %, DC T_wc 3.12 s < 4 s: PASS |
+| GEN5-006 | DC interval 2000 ms rejected by V-14 |
+| Simulator `--dump`, `lab_mixed` | DC: `4448 0000 E848 0001 0000 42C8` / `D090 0003 0000 0000` / `0000` |
+| Firmware compile check (host, ESP32 types) of both new table sets with `app_main.c`, `ems_acquisition.c`, `ems_poll_scheduler.c` | OK |
+
+### NOC checks after committing (Test Spec NOC-001, NOC-003)
+
+```powershell
+git diff --stat dp-wp5-m1 HEAD -- main components   # only main/generated*/ and the two ems_measurement generated files
+git diff --stat dp-wp5-m1 HEAD -- tools/profile/myems_profile_tool.py tools/profile/umd_gen.py tools/wp4/myems_ac_meter_sim.py   # empty
+```
+
+### To run on the PC before committing
+
+```powershell
+python -m unittest discover -s tools/profile/tests
+python -m unittest discover -s tools/wp4/tests
+cmake -S test/host -B build_host; cmake --build build_host; ctest --test-dir build_host
+.\tools\build_firmware.ps1 -Mode Wp5Dc       # banner: LAB_DC_BENCH, CRC 0xCC22DC64
+.\tools\build_firmware.ps1 -Mode Wp5Mixed    # banner: LAB_MIXED, CRC 0xC04114E4
+```
+
+Optional quick look on the bench (not an exit criterion; the HIL suites come in M4/M5):
+
+```powershell
+.\tools\build_firmware.ps1 -Mode Wp5Dc -Port COM11 -Flash -Monitor
+python tools/wp4/myems_ac_meter_sim.py --site config/site/lab_dc_bench.site.json --port COM12
+```

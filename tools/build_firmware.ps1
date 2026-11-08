@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('SelfTest', 'Production', 'Wp4Sim', 'Wp4Sim2Dev', 'Wp4Ratio', 'Wp4Esc')]
+    [ValidateSet('SelfTest', 'Production', 'Wp4Sim', 'Wp4Sim2Dev', 'Wp4Ratio', 'Wp4Esc', 'Wp5Dc', 'Wp5Mixed', 'Wp5MixedEsc')]
     [string]$Mode,
 
     [string]$Port = 'COM11',
@@ -16,8 +16,9 @@ Set-Location $ProjectRoot
 # Wp4Sim = production firmware + CONFIG_MYEMS_CONFIG_TARGET_SIM (DP-WP4 simulation configuration)
 # Wp4Esc = Wp4Sim + CONFIG_MYEMS_WP4_ESC_TEST (D8: RS-485 recovery forced to fail; HIL suite esc only)
 # Wp4Sim2Dev / Wp4Ratio = Wp4Sim with site lab_bench_2dev / lab_ratio_ct200 (D9)
-$configFile = switch ($Mode) { 'SelfTest' { 'sdkconfig.selftest' } 'Wp4Sim' { 'sdkconfig.wp4_sim' } 'Wp4Sim2Dev' { 'sdkconfig.wp4_sim_2dev' } 'Wp4Ratio' { 'sdkconfig.wp4_ratio' } 'Wp4Esc' { 'sdkconfig.wp4_esc' } default { 'sdkconfig.production' } }
-$buildDir = switch ($Mode) { 'SelfTest' { 'build_selftest' } 'Wp4Sim' { 'build_wp4_sim' } 'Wp4Sim2Dev' { 'build_wp4_sim_2dev' } 'Wp4Ratio' { 'build_wp4_ratio' } 'Wp4Esc' { 'build_wp4_esc' } default { 'build_production' } }
+# Wp5Dc / Wp5Mixed = Wp4Sim with site lab_dc_bench / lab_mixed; Wp5MixedEsc = Wp4Esc with site lab_mixed (DP-WP5)
+$configFile = switch ($Mode) { 'SelfTest' { 'sdkconfig.selftest' } 'Wp4Sim' { 'sdkconfig.wp4_sim' } 'Wp4Sim2Dev' { 'sdkconfig.wp4_sim_2dev' } 'Wp4Ratio' { 'sdkconfig.wp4_ratio' } 'Wp4Esc' { 'sdkconfig.wp4_esc' } 'Wp5Dc' { 'sdkconfig.wp5_dc' } 'Wp5Mixed' { 'sdkconfig.wp5_mixed' } 'Wp5MixedEsc' { 'sdkconfig.wp5_mixed_esc' } default { 'sdkconfig.production' } }
+$buildDir = switch ($Mode) { 'SelfTest' { 'build_selftest' } 'Wp4Sim' { 'build_wp4_sim' } 'Wp4Sim2Dev' { 'build_wp4_sim_2dev' } 'Wp4Ratio' { 'build_wp4_ratio' } 'Wp4Esc' { 'build_wp4_esc' } 'Wp5Dc' { 'build_wp5_dc' } 'Wp5Mixed' { 'build_wp5_mixed' } 'Wp5MixedEsc' { 'build_wp5_mixed_esc' } default { 'build_production' } }
 $configPath = Join-Path $ProjectRoot $configFile
 
 if (-not (Test-Path $configPath)) {

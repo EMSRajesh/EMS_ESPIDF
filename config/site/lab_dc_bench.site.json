@@ -1,0 +1,31 @@
+{
+  "$schema": "../schema/site.schema.json",
+  "schema": "myems.site/1.1",
+  "site_id": "LAB_DC_BENCH",
+  "description": "One simulated DC meter (battery string, slave 3) on the lab RS-485 bus. DP-WP5 Design 6.3.",
+  "buses": [
+    {
+      "bus_id": "RS485_BUS_1",
+      "uart": 1,
+      "tx_gpio": 17,
+      "rx_gpio": 18,
+      "rts_gpio": 21,
+      "baud": 9600,
+      "parity": "EVEN",
+      "stop_bits": 1
+    }
+  ],
+  "devices": [
+    {
+      "device_instance_id": "DC_BATT_STRING_01",
+      "slot": 0,
+      "profile_id": "DC_METER_SIM",
+      "bus_id": "RS485_BUS_1",
+      "slave_id": 3,
+      "ct_ratio": 1.0,
+      "pt_ratio": 1.0,
+      "location": "BATTERY_STRING_1",
+      "enabled": true
+    }
+  ]
+}

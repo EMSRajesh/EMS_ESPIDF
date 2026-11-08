@@ -32,10 +32,16 @@ static const expected_param_t k_expected[] = {
     { "ac.frequency",            0x0130u, EMS_UNIT_HZ,    EMS_VT_FLOAT   },
     { "ac.energy.import.active", 0x0140u, EMS_UNIT_KWH,   EMS_VT_COUNTER },
     { "ac.energy.export.active", 0x0141u, EMS_UNIT_KWH,   EMS_VT_COUNTER },
+    /* DP-WP5 Design Specification v1.0, Section 4.2 (UMD5-001, UMD5-003) */
+    { "dc.voltage",              0x0201u, EMS_UNIT_V,     EMS_VT_FLOAT   },
+    { "dc.current",              0x0211u, EMS_UNIT_A,     EMS_VT_FLOAT   },
+    { "dc.power",                0x0221u, EMS_UNIT_KW,    EMS_VT_FLOAT   },
+    { "dc.energy.import",        0x0240u, EMS_UNIT_KWH,   EMS_VT_COUNTER },
+    { "dc.energy.export",        0x0241u, EMS_UNIT_KWH,   EMS_VT_COUNTER },
 };
 #define N_EXPECTED (sizeof(k_expected) / sizeof(k_expected[0]))
 
-static void test_UMD001_every_wp4_parameter_resolves_by_name_and_id(void)
+static void test_UMD001_every_parameter_resolves_by_name_and_id(void)
 {
     TEST_ASSERT_EQUAL_UINT32(N_EXPECTED, ems_param_table_len);
     TEST_ASSERT_EQUAL_UINT32(EMS_PARAM_COUNT, ems_param_table_len);
@@ -57,6 +63,8 @@ static void test_UMD001_generated_macros_match_design_ids(void)
     TEST_ASSERT_EQUAL_HEX16(0x0124u, EMS_PARAM_AC_POWER_FACTOR_TOTAL);
     TEST_ASSERT_EQUAL_HEX16(0x0130u, EMS_PARAM_AC_FREQUENCY);
     TEST_ASSERT_EQUAL_HEX16(0x0141u, EMS_PARAM_AC_ENERGY_EXPORT_ACTIVE);
+    TEST_ASSERT_EQUAL_HEX16(0x0201u, EMS_PARAM_DC_VOLTAGE);
+    TEST_ASSERT_EQUAL_HEX16(0x0241u, EMS_PARAM_DC_ENERGY_EXPORT);
     TEST_ASSERT_EQUAL_STRING("1.1.0", EMS_UMD_VERSION);   /* DP-WP5: roles and capabilities added */
 }
 
@@ -67,13 +75,15 @@ static void test_UMD001_table_sorted_unique_and_domain_consistent(void)
         if (i > 0u) {
             TEST_ASSERT_TRUE(ems_param_table[i - 1u].runtime_id < p->runtime_id);
         }
-        /* High byte = domain: "dev." -> 0x00, "ac." -> 0x01 */
+        /* High byte = domain: "dev." -> 0x00, "ac." -> 0x01, "dc." -> 0x02 */
         if (strncmp(p->name, "ac.", 3) == 0) {
             TEST_ASSERT_EQUAL_HEX8(EMS_DOMAIN_AC, (uint8_t)(p->runtime_id >> 8));
+        } else if (strncmp(p->name, "dc.", 3) == 0) {
+            TEST_ASSERT_EQUAL_HEX8(EMS_DOMAIN_DC, (uint8_t)(p->runtime_id >> 8));
         } else if (strncmp(p->name, "dev.", 4) == 0) {
             TEST_ASSERT_EQUAL_HEX8(EMS_DOMAIN_DEV, (uint8_t)(p->runtime_id >> 8));
         } else {
-            TEST_FAIL_MESSAGE("unexpected domain in WP4 dictionary");
+            TEST_FAIL_MESSAGE("unexpected domain in the dictionary");
         }
         TEST_ASSERT_NOT_NULL(p->description);
         TEST_ASSERT_TRUE(strlen(p->description) > 0u);
@@ -144,7 +154,7 @@ static void test_text_helpers_cover_every_value(void)
 
 void run_dictionary_tests(void)
 {
-    RUN_TEST(test_UMD001_every_wp4_parameter_resolves_by_name_and_id);
+    RUN_TEST(test_UMD001_every_parameter_resolves_by_name_and_id);
     RUN_TEST(test_UMD001_generated_macros_match_design_ids);
     RUN_TEST(test_UMD001_table_sorted_unique_and_domain_consistent);
     RUN_TEST(test_UMD004_units_and_value_types);

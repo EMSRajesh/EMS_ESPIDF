@@ -55,9 +55,9 @@ Implement DP-WP5 as described in the Design, in an order that proves the DP-WP4 
 | `config/maps/myems_sim_dcmeter.map.json` | Design 6.2, with `test_vector` and `sim_out_of_range` | 6.2 |
 | `config/site/lab_dc_bench.site.json`, `lab_mixed.site.json` | Design 6.3 | 6.3 |
 | `main/generated_sites/lab_dc_bench/`, `lab_mixed/` | Generated | 9 |
-| `sdkconfig.wp5_dc`, `sdkconfig.wp5_mixed` | Production + `MYEMS_CONFIG_TARGET_SIM=y` + site dir + banner variant | 9 |
-| `tools/build_firmware.ps1`, `BUILD_MODES.md` | Modes `Wp5Dc`, `Wp5Mixed` (build tooling, not firmware) | 9 |
-| `test/host/CMakeLists.txt` | Executables `test_ems_config_site_dc`, `test_ems_config_site_mixed` built from the existing test source | – |
+| `sdkconfig.wp5_dc`, `sdkconfig.wp5_mixed`, `sdkconfig.wp5_mixed_esc` | `sdkconfig.wp4_sim` / `.wp4_esc` with another `CONFIG_MYEMS_SIM_SITE_DIR` (the escalation build moved forward from M5: it is data too) | 9 |
+| `tools/build_firmware.ps1`, `BUILD_MODES.md` | Modes `Wp5Dc`, `Wp5Mixed`, `Wp5MixedEsc` (build tooling, not firmware) | 9 |
+| `test/host/CMakeLists.txt`, `test_ems_config_site.c`, `test_ems_dictionary.c`; `tools/profile/tests/test_umd_gen.py`, `test_wp5_m2.py` | Executables `test_ems_config_site_dc`, `_mixed`; DC expectations; M2 tests (test code, not firmware) | – |
 
 **Rule for M2:** `git diff --stat <M1 tag> <M2 tag> -- main components` lists only generated files: `main/generated*/` and the two dictionary C files of `components/ems_measurement` (Test Spec NOC-001). If anything else is needed, M2 stops, the change moves back to an M1-style commit with AC regression, and the finding is recorded against the framework.
 
@@ -70,7 +70,6 @@ Note on the dictionary version: M1 and M2 are both part of dictionary release 1.
 | `tools/wp4/myems_wp4_runner.py` | Suites `dc`, `mixed`, `mixed_esc`; site-aware `load` and `soak`; expected NORMAL values read from the `export-sim` test vectors where possible (Design open item 6) |
 | `tools/wp4/tests/test_wp4_runner_wp5.py` | Unit tests for the new analyses (offline log fixtures, as for D9) |
 | `tools/wp5/run_wp5_all.ps1` | Unattended run of the WP5 HIL steps, same structure as `run_d9_all.ps1` (keep-awake, per-step logs, `summary.txt`, `-SkipSoak`, `-SoakMinutes`) |
-| `sdkconfig.wp5_mixed_esc`, build mode `Wp5MixedEsc` | Mixed site + `MYEMS_WP4_ESC_TEST`, for bus escalation with two device types |
 | `docs/WP5_CHECKLIST.md`, `docs/DP-WP5_ACCEPTANCE_RECORD.md` | Checklist and acceptance record |
 
 # 4. Key interface changes (host tool)
@@ -125,12 +124,12 @@ M1–M3 need no ESP32 and can run while D9 HIL and COM-WP2.4 are still open. M4�
 
 # 8. Build modes
 
-| Mode | sdkconfig | Site folder | Banner variant | Purpose |
+| Mode | sdkconfig | Site folder | Banner (site, CRC) | Purpose |
 |---|---|---|---|---|
 | Production, SelfTest, Wp4Sim, Wp4Sim2Dev, Wp4Ratio, Wp4Esc | unchanged | unchanged | unchanged | WP4 regression |
-| **Wp5Dc** | `sdkconfig.wp5_dc` | `generated_sites/lab_dc_bench` | `WP5_DC_SIM` | DC-xxx |
-| **Wp5Mixed** | `sdkconfig.wp5_mixed` | `generated_sites/lab_mixed` | `WP5_MIXED_SIM` | MIX-xxx, PERF5 |
-| **Wp5MixedEsc** | `sdkconfig.wp5_mixed_esc` | `generated_sites/lab_mixed` | `WP5_MIXED_ESC_TEST` | MIX-007, MIX-008 |
+| **Wp5Dc** | `sdkconfig.wp5_dc` | `generated_sites/lab_dc_bench` | LAB_DC_BENCH, 0xCC22DC64 | DC-xxx |
+| **Wp5Mixed** | `sdkconfig.wp5_mixed` | `generated_sites/lab_mixed` | LAB_MIXED, 0xC04114E4 | MIX-xxx, PERF5 |
+| **Wp5MixedEsc** | `sdkconfig.wp5_mixed_esc` | `generated_sites/lab_mixed` | LAB_MIXED, 0xC04114E4, `BUILD_VARIANT=WP4_ESC_TEST` | MIX-007, MIX-008 |
 
 Each mode has its own build directory, as before (`build_wp5_dc`, …).
 

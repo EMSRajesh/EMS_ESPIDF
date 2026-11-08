@@ -141,7 +141,7 @@ Run through the host engine (`ems_regmap_convert`, `ems_counter_update`) with th
 
 | ID | Scenario | Expected result |
 |---|---|---|
-| DC-001 | Boot | Banner `WP5_DC_SIM`, classification SIMULATION_ONLY, CRC of `lab_dc_bench`; polling starts; simulator log shows FC04 and FC03 requests to slave 3 only |
+| DC-001 | Boot | Banner: site LAB_DC_BENCH, classification SIMULATION_ONLY, CRC 0xCC22DC64; polling starts; simulator log shows FC04 and FC03 requests to slave 3 only |
 | DC-002 | NORMAL | All six parameters GOOD with the 2.1 values |
 | DC-003 | Group intervals | `measurements` every 4 s ± 100 ms; `energy` 10 s; `status` 30 s; offsets as Design 6.2 |
 | DC-004 | IMPORT | Power and current positive GOOD; import counter increases between energy polls |
@@ -158,7 +158,7 @@ Run through the host engine (`ems_regmap_convert`, `ems_counter_update`) with th
 
 | ID | Scenario | Expected result |
 |---|---|---|
-| MIX-001 | Boot | Banner `WP5_MIXED_SIM`; two devices (`AC_METER`, `DC_METER`); 6 poll entries |
+| MIX-001 | Boot | Banner: site LAB_MIXED, CRC 0xC04114E4; two devices (`AC_METER`, `DC_METER`); 6 poll entries |
 | MIX-002 | Both NORMAL, 10 min | AC values = WP4 Test Spec 4.1, DC values = 2.1, all GOOD; records under the right slot; no routing errors |
 | MIX-003 | AC TIMEOUT, DC NORMAL | AC OFFLINE; DC stays GOOD; DC `measurements` interval within 4 s ± 3.2 s |
 | MIX-004 | AC NORMAL, DC TIMEOUT | DC OFFLINE; AC stays GOOD; AC `electrical` interval within 5 s ± 3.2 s |
