@@ -117,6 +117,8 @@ typedef struct {
     uint32_t submitted;
     uint32_t skipped;           /* periods skipped, not caught up (device busy) */
     uint32_t rejected;          /* submission refused by the master             */
+    uint32_t last_latency_ms;   /* submit -> feedback of the last request       */
+    uint32_t max_latency_ms;
 } ems_sched_entry_stats_t;
 
 typedef struct {

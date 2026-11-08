@@ -1,5 +1,5 @@
 /*
- * MyEMS poll scheduler task (DP-WP4 4E, milestone D5).
+ * MyEMS poll scheduler task (DP-WP4 4E, milestones D5, D7).
  *
  * All decisions are made by the pure-C core (ems_sched_core.c, host-tested).
  * This file only adds the FreeRTOS task, the message queue, the Modbus
@@ -14,6 +14,7 @@
  *     releases the slot.
  */
 #include "ems_poll_scheduler.h"
+#include "ems_event.h"
 #include "ems_stack_diag.h"
 
 #include <inttypes.h>
@@ -53,6 +54,7 @@ struct ems_poll_scheduler {
     SemaphoreHandle_t stopped_sem;
     uint32_t task_stack_size;
     volatile uint32_t queue_full;
+    uint32_t queue_hwm;
     volatile bool stopping;
 };
 
@@ -129,6 +131,7 @@ static void update_snapshot(struct ems_poll_scheduler *s)
     }
     s->snapshot.health_flags = s->core.health_flags;
     s->snapshot.queue_full = s->queue_full;
+    s->snapshot.queue_hwm = s->queue_hwm;
     taskEXIT_CRITICAL(&s_stats_mux);
 }
 
@@ -157,6 +160,10 @@ static void scheduler_task(void *argument)
         sched_msg_t msg;
         if (xQueueReceive(s->queue, &msg, ticks) == pdTRUE) {
             now_us = esp_timer_get_time();
+            const uint32_t waiting = (uint32_t)uxQueueMessagesWaiting(s->queue) + 1U;
+            if (waiting > s->queue_hwm) {
+                s->queue_hwm = waiting;   /* DIAG-005 */
+            }
             handle_msg(s, &msg, now_us);
             while (xQueueReceive(s->queue, &msg, 0) == pdTRUE) {
                 handle_msg(s, &msg, now_us);
@@ -167,6 +174,8 @@ static void scheduler_task(void *argument)
         const uint32_t expired = ems_sched_check_guards(&s->core, now_us);
         for (uint8_t d = 0; d < s->core.plan.device_count; d++) {
             if ((expired & (1u << d)) != 0u) {
+                (void)ems_event_emit(EMS_EVT_SCHED_GUARD_EXPIRED, d, EMS_EVENT_NO_PARAM,
+                                     s->core.device[d].pending_id, now_us);
                 ESP_LOGE(TAG, "EVT_SCHED_GUARD_EXPIRED slot=%u request=0x%08" PRIX32
                               ": no feedback after %" PRId64 " ms; slot NOT released (Design 9.5), "
                               "HEALTH_SCHED_FEEDBACK raised",

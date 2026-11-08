@@ -11,7 +11,7 @@
  *   8.5  energy counters (via ems_counter)
  *   9.1  routing by request ID; mismatches counted and discarded
  *   9.3  result -> quality table, freshness check
- *   9.4  consecutive comm failure counter (device state itself: D7)
+ *   9.4  device communication state ONLINE / OFFLINE (D7)
  */
 #ifndef EMS_ACQ_CORE_H
 #define EMS_ACQ_CORE_H
@@ -31,6 +31,13 @@ extern "C" {
 #endif
 
 #define EMS_ACQ_MAX_COUNTERS_PER_DEVICE 8u
+
+/* Device communication state (Design 9.4). Same values as ems_sched_dev_mode_t. */
+typedef enum {
+    EMS_ACQ_DEV_ONLINE = 0,
+    EMS_ACQ_DEV_OFFLINE,        /* parameters COMM_LOST, probe mode in the scheduler */
+    EMS_ACQ_DEV_DISABLED        /* enabled = false: never polled, NOT_SUPPORTED       */
+} ems_acq_dev_mode_t;
 #define EMS_ACQ_NO_COUNTER              0xFFu
 
 /* Terminal result status, same meaning and order as modbus_result_status_t. */
@@ -79,6 +86,8 @@ typedef struct {
     uint8_t  counter_discontinuities; /* in this result                       */
     uint8_t  counter_rollovers;
     uint16_t discontinuity_param;    /* last param with a discontinuity      */
+    bool     device_offline;          /* device went ONLINE -> OFFLINE now   */
+    bool     device_online;           /* device went OFFLINE -> ONLINE now   */
 } ems_acq_outcome_t;
 
 /* Per-device counters (Design 9.9, the part acquisition owns). */
@@ -93,9 +102,12 @@ typedef struct {
     uint32_t mismatches;
     uint32_t counter_discontinuities;
     uint32_t counter_rollovers;
-    int64_t  last_ok_us;
+    uint32_t offline_transitions;
+    uint32_t online_transitions;
+    int64_t  last_ok_us;             /* completion time of the last OK result, 0 = none */
     uint8_t  last_exception;
     uint8_t  consecutive_failures;
+    uint8_t  mode;                   /* ems_acq_dev_mode_t */
 } ems_acq_device_stats_t;
 
 typedef struct {
@@ -111,6 +123,7 @@ typedef struct {
     ems_ratio_t               ratio[EMS_CFG_MAX_DEVICES];
     bool                      apply_ratio[EMS_CFG_MAX_DEVICES];   /* MYEMS_APPLIES */
     double                    counter_max_rate[EMS_CFG_MAX_DEVICES];
+    uint8_t                   comm_lost_threshold[EMS_CFG_MAX_DEVICES];
     uint8_t                   counter_of[EMS_CFG_MAX_DEVICES][EMS_CFG_MAX_MAPPINGS_PER_MAP];
     ems_counter_t             counters[EMS_CFG_MAX_DEVICES][EMS_ACQ_MAX_COUNTERS_PER_DEVICE];
     double                    last_delta[EMS_CFG_MAX_DEVICES][EMS_ACQ_MAX_COUNTERS_PER_DEVICE];
@@ -140,13 +153,24 @@ ems_acq_init_status_t ems_acq_core_init(ems_acq_core_t *core, const ems_config_b
 
 const char *ems_acq_init_status_name(ems_acq_init_status_t status);
 
-/* Process one terminal result at time now_us (completion time). */
+/*
+ * Process one terminal result at time now_us (completion time).
+ * Device state (Design 9.4): when the consecutive failure count of an ONLINE
+ * device reaches its comm_lost_threshold, the device goes OFFLINE and every
+ * parameter becomes COMM_LOST (outcome.device_offline). The first OK or
+ * EXCEPTION result (the device answered) brings it back ONLINE
+ * (outcome.device_online); each group becomes GOOD on its own next read.
+ * The caller tells the scheduler (probe mode) and emits the events.
+ */
 void ems_acq_core_process(ems_acq_core_t *core, const ems_acq_result_t *result, int64_t now_us,
                           ems_acq_outcome_t *outcome);
 
 /* Freshness check (Design 9.3): GOOD older than its stale timeout -> STALE.
  * Returns the number of records changed. */
 uint32_t ems_acq_core_tick(ems_acq_core_t *core, int64_t now_us);
+
+/* Current device communication state (ems_acq_dev_mode_t). */
+ems_acq_dev_mode_t ems_acq_core_device_mode(const ems_acq_core_t *core, uint8_t slot);
 
 /* Last counter delta of a counter parameter (0 if none). */
 double ems_acq_core_counter_delta(const ems_acq_core_t *core, uint8_t slot, uint16_t param_id);

@@ -17,4 +17,5 @@ idf_component_register(
         ems_profile
         ems_measurement
         ems_register_map
+        ems_diag
 )

@@ -1,12 +1,16 @@
 #include <inttypes.h>
+#include <stdio.h>
 
 #include "ems_acquisition.h"
 #include "ems_config_gen.h"
+#include "ems_event.h"
 #include "ems_poll_scheduler.h"
+#include "ems_profile.h"
 #include "ems_sched_core.h"
 #include "ems_stack_diag.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "modbus_rtu_master.h"
@@ -53,9 +57,10 @@ static void myems_self_test_task(void *arg)
  * --------------------------------------------------------------------------
  * Devices, poll groups and bus settings come from the generated tables in
  * main/generated/ (tools/profile/myems_profile_tool.py). The 09_057 demo
- * meter profiles are gone. Full activation (structural re-validation, events)
- * is milestone D7; D5 checks the CRC and the build target and builds the
- * scheduler plan. On any failure nothing is polled.
+ * meter profiles are gone. Before anything is polled the tables are
+ * re-checked (ems_profile_activate: CRC, target/classification V-13, limits
+ * V-15, structural rules) and the scheduler plan is built (Design 5.3 step 4).
+ * On any failure: EVT_CONFIG_REJECTED, error log, nothing is polled (DR-03).
  */
 #if CONFIG_MYEMS_CONFIG_TARGET_SIM
 #define MYEMS_CONFIG_TARGET_NAME "sim"
@@ -68,6 +73,30 @@ static void myems_self_test_task(void *arg)
 #endif
 
 static ems_sched_plan_t s_plan;
+#if CONFIG_MYEMS_CONFIG_TARGET_SIM
+static const bool s_sim_build = true;
+#else
+static const bool s_sim_build = false;
+#endif
+
+static portMUX_TYPE s_event_mux = portMUX_INITIALIZER_UNLOCKED;
+static void event_lock(void *ctx)
+{
+    (void)ctx;
+    taskENTER_CRITICAL(&s_event_mux);
+}
+static void event_unlock(void *ctx)
+{
+    (void)ctx;
+    taskEXIT_CRITICAL(&s_event_mux);
+}
+
+static void myems_config_rejected(const char *rule, const char *reason, uint32_t data)
+{
+    (void)ems_event_emit(EMS_EVT_CONFIG_REJECTED, EMS_EVENT_NO_SLOT, EMS_EVENT_NO_PARAM, data,
+                         esp_timer_get_time());
+    ESP_LOGE(TAG, "EVT_CONFIG_REJECTED rule=%s: %s", rule, reason);
+}
 
 static bool myems_config_accept(const ems_config_build_t *cfg)
 {
@@ -77,31 +106,38 @@ static bool myems_config_accept(const ems_config_build_t *cfg)
     ESP_LOGI(TAG, "CONFIG inputs: %s (sha256 %s, tool %s, umd %s)",
              cfg->inputs_summary, cfg->inputs_sha256, cfg->tool_version, cfg->umd_version);
 
-    const uint32_t crc = ems_config_crc32(cfg);
-    if (crc != cfg->crc32) {
-        ESP_LOGE(TAG, "CONFIG REJECTED: CRC 0x%08" PRIX32 " does not match stored 0x%08" PRIX32,
-                 crc, cfg->crc32);
-        return false;
-    }
-    /* V-13 (firmware side): a simulation build accepts only sim tables and a
-     * production build only production tables. */
-    if (cfg->target != MYEMS_CONFIG_TARGET_VALUE ||
-        (MYEMS_CONFIG_TARGET_VALUE == EMS_TARGET_PROD && cfg->classification != EMS_CLASS_PRODUCTION)) {
-        ESP_LOGE(TAG, "CONFIG REJECTED: %s configuration (target %s) in a CONFIG_TARGET=%s build",
-                 ems_classification_name(cfg->classification),
-                 cfg->target == EMS_TARGET_SIM ? "sim" : "prod", MYEMS_CONFIG_TARGET_NAME);
-        return false;
-    }
-    if (cfg->bus_count < 1U) {
-        ESP_LOGE(TAG, "CONFIG REJECTED: no bus");
+    ems_activation_report_t rep;
+    const ems_activation_status_t st = ems_profile_activate(cfg, s_sim_build, &rep);
+    if (st != EMS_ACT_OK) {
+        char reason[160];
+        if (st == EMS_ACT_CRC) {
+            (void)snprintf(reason, sizeof(reason), "CRC 0x%08" PRIX32 " of the tables does not match the "
+                           "stored 0x%08" PRIX32 " (tables altered after generation)",
+                           rep.crc_computed, rep.crc_stored);
+        } else if (st == EMS_ACT_TARGET) {
+            (void)snprintf(reason, sizeof(reason), "%s configuration (target %s) in a CONFIG_TARGET=%s build",
+                           ems_classification_name(cfg->classification),
+                           cfg->target == EMS_TARGET_SIM ? "sim" : "prod", MYEMS_CONFIG_TARGET_NAME);
+        } else if (st == EMS_ACT_MAP) {
+            (void)snprintf(reason, sizeof(reason), "map %u entry %u: %s", (unsigned)rep.index,
+                           (unsigned)rep.sub_index, ems_map_check_name(rep.map_check));
+        } else {
+            (void)snprintf(reason, sizeof(reason), "%s at index %u/%u", ems_activation_status_name(st),
+                           (unsigned)rep.index, (unsigned)rep.sub_index);
+        }
+        myems_config_rejected(rep.rule, reason, rep.crc_computed);
         return false;
     }
     const ems_sched_plan_status_t ps = ems_sched_plan_build(cfg, &s_plan);
     if (ps != EMS_SCHED_PLAN_OK || s_plan.entry_count == 0U) {
-        ESP_LOGE(TAG, "CONFIG REJECTED: scheduler plan %s (%u entries)",
-                 ems_sched_plan_status_name(ps), (unsigned)s_plan.entry_count);
+        myems_config_rejected("PLAN", ems_sched_plan_status_name(ps), (uint32_t)ps);
         return false;
     }
+    (void)ems_event_emit(EMS_EVT_CONFIG_ACTIVATED, EMS_EVENT_NO_SLOT, EMS_EVENT_NO_PARAM, cfg->crc32,
+                         esp_timer_get_time());
+    ESP_LOGI(TAG, "EVT_CONFIG_ACTIVATED site=%s crc=0x%08" PRIX32 " classification=%s: %u devices, "
+                  "%u poll entries", cfg->site_id, cfg->crc32, ems_classification_name(cfg->classification),
+             (unsigned)cfg->device_count, (unsigned)s_plan.entry_count);
     if (cfg->classification != EMS_CLASS_PRODUCTION) {
         ESP_LOGW(TAG, "SIMULATION/TEST CONFIGURATION: synthetic register addresses; "
                       "connect only the MyEMS simulator, never a real meter");
@@ -117,6 +153,67 @@ static uart_parity_t myems_uart_parity(uint8_t parity)
     default:              return UART_PARITY_DISABLE;
     }
 }
+static void myems_print_diagnostics(ems_poll_scheduler_handle_t scheduler, ems_acquisition_handle_t acquisition,
+                                    modbus_master_handle_t master)
+{
+    ems_poll_scheduler_stats_t ss;
+    ems_acquisition_stats_t as;
+    if (ems_poll_scheduler_get_stats(scheduler, &ss) != ESP_OK ||
+        ems_acquisition_get_stats(acquisition, &as) != ESP_OK) {
+        return;
+    }
+    const int64_t now_us = esp_timer_get_time();
+    uint32_t submitted = 0U, skipped = 0U, rejected = 0U;
+    for (uint8_t e = 0; e < ss.entry_count; e++) {
+        submitted += ss.entry[e].submitted;
+        skipped += ss.entry[e].skipped;
+        rejected += ss.entry[e].rejected;
+    }
+    ESP_LOGI(TAG, "STATS sched: submitted=%" PRIu32 " skipped=%" PRIu32 " rejected=%" PRIu32
+                  " guard_expired=%" PRIu32 " fb_unmatched=%" PRIu32 " fb_late=%" PRIu32
+                  " health=0x%02" PRIX32 " | acq: results=%" PRIu32 " ok=%" PRIu32
+                  " failed=%" PRIu32 " routing_errors=%" PRIu32 " stale=%" PRIu32,
+             submitted, skipped, rejected, ss.core.guard_expired, ss.core.feedback_unmatched,
+             ss.core.feedback_late, ss.health_flags, as.results, as.ok, as.failed,
+             as.routing_errors, as.stale_transitions);
+
+    for (uint8_t d = 0; d < ems_config_build.device_count; d++) {
+        ems_acq_device_stats_t ds;
+        if (ems_acquisition_get_device_stats(acquisition, d, &ds) != ESP_OK) {
+            continue;
+        }
+        const long long last_ok_age_ms = ds.last_ok_us > 0 ? (now_us - ds.last_ok_us) / 1000 : -1;
+        ESP_LOGI(TAG, "DIAG slot=%u %s mode=%s ok=%" PRIu32 " timeouts=%" PRIu32 " crc=%" PRIu32
+                      " protocol=%" PRIu32 " transport=%" PRIu32 " exceptions=%" PRIu32 " last_exc=0x%02X"
+                      " mismatches=%" PRIu32 " consec_fail=%u offline=%" PRIu32 " online=%" PRIu32
+                      " last_ok_age_ms=%lld counter_disc=%" PRIu32,
+                 (unsigned)d, ems_config_build.devices[d].instance_id, ems_acquisition_mode_name(ds.mode),
+                 ds.ok, ds.timeouts, ds.crc_errors, ds.protocol_errors, ds.transport_errors, ds.exceptions,
+                 (unsigned)ds.last_exception, ds.mismatches, (unsigned)ds.consecutive_failures,
+                 ds.offline_transitions, ds.online_transitions, last_ok_age_ms, ds.counter_discontinuities);
+    }
+    for (uint8_t e = 0; e < ss.entry_count; e++) {
+        const ems_sched_entry_t *en = &s_plan.entries[e];
+        ESP_LOGI(TAG, "DIAG entry=%u slot=%u grp=%u submitted=%" PRIu32 " skipped=%" PRIu32 " rejected=%" PRIu32
+                      " latency_ms=%" PRIu32 " max_latency_ms=%" PRIu32,
+                 (unsigned)e, (unsigned)en->slot, (unsigned)en->group_index, ss.entry[e].submitted,
+                 ss.entry[e].skipped, ss.entry[e].rejected, ss.entry[e].last_latency_ms,
+                 ss.entry[e].max_latency_ms);
+    }
+    modbus_master_stats_t ms;
+    ems_event_stats_t es;
+    ems_event_get_stats(&es);
+    if (modbus_master_get_stats(master, &ms) == ESP_OK) {
+        ESP_LOGI(TAG, "DIAG bus accepted=%" PRIu32 " completed=%" PRIu32 " timeouts=%" PRIu32 " crc=%" PRIu32
+                      " protocol=%" PRIu32 " transport=%" PRIu32 " completion_drops=%" PRIu32
+                      " backpressure=%" PRIu32 " unexpected_slave=%" PRIu32 " | sched_queue_hwm=%" PRIu32
+                      " sched_queue_full=%" PRIu32 " | events=%" PRIu32 " event_drops=%" PRIu32,
+                 ms.requests_accepted, ms.requests_completed, ms.timeouts, ms.crc_errors, ms.protocol_errors,
+                 ms.transport_errors, ms.completion_drops, ms.completion_backpressure_rejections,
+                 ms.unexpected_slave_frames, ss.queue_hwm, ss.queue_full, es.emitted, es.drops);
+    }
+}
+
 #endif /* !CONFIG_MYEMS_MODBUS_SELF_TEST */
 
 void app_main(void)
@@ -124,6 +221,8 @@ void app_main(void)
 #if CONFIG_MYEMS_MODBUS_SELF_TEST
     ESP_LOGW(TAG, "BUILD_MODE=SELF_TEST; connect an RS485 simulator, not a live meter");
 #else
+    static const ems_event_lock_t event_lock_cfg = { .lock = event_lock, .unlock = event_unlock, .ctx = NULL };
+    ems_event_init(&event_lock_cfg);
     ESP_LOGI(TAG, "BUILD_MODE=PRODUCTION CONFIG_TARGET=%s", MYEMS_CONFIG_TARGET_NAME);
     if (!myems_config_accept(&ems_config_build)) {
         ESP_LOGE(TAG, "No polling started (device stays READY). Fix the configuration or build mode.");
@@ -276,28 +375,12 @@ void app_main(void)
     ESP_LOGI(TAG, "MyEMS DP-WP4 polling started: %u devices, %u poll entries",
              (unsigned)s_plan.device_count, (unsigned)s_plan.entry_count);
 
-    /* app_main does not poll. Every 60 s it prints the scheduler and
-     * acquisition counters (diagnostics proper come in D7). */
+    /* app_main does not poll. Every 60 s it prints the diagnostics
+     * (Design 9.9): STATS summary, one DIAG line per device and per poll
+     * entry, and the bus / queue / event counters. */
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(60000U));
-        ems_poll_scheduler_stats_t ss;
-        ems_acquisition_stats_t as;
-        if (ems_poll_scheduler_get_stats(scheduler, &ss) == ESP_OK &&
-            ems_acquisition_get_stats(acquisition, &as) == ESP_OK) {
-            uint32_t submitted = 0U, skipped = 0U, rejected = 0U;
-            for (uint8_t e = 0; e < ss.entry_count; e++) {
-                submitted += ss.entry[e].submitted;
-                skipped += ss.entry[e].skipped;
-                rejected += ss.entry[e].rejected;
-            }
-            ESP_LOGI(TAG, "STATS sched: submitted=%" PRIu32 " skipped=%" PRIu32 " rejected=%" PRIu32
-                          " guard_expired=%" PRIu32 " fb_unmatched=%" PRIu32 " fb_late=%" PRIu32
-                          " health=0x%02" PRIX32 " | acq: results=%" PRIu32 " ok=%" PRIu32
-                          " failed=%" PRIu32 " routing_errors=%" PRIu32 " stale=%" PRIu32,
-                     submitted, skipped, rejected, ss.core.guard_expired, ss.core.feedback_unmatched,
-                     ss.core.feedback_late, ss.health_flags, as.results, as.ok, as.failed,
-                     as.routing_errors, as.stale_transitions);
-        }
+        myems_print_diagnostics(scheduler, acquisition, master);
     }
 #endif
 }

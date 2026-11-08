@@ -252,7 +252,6 @@ static void update_health(ems_sched_core_t *core)
 
 ems_sched_feedback_t ems_sched_feedback(ems_sched_core_t *core, uint32_t request_id, int64_t now_us)
 {
-    (void)now_us;
     if (core == NULL || request_id == 0u) {
         if (core != NULL) {
             core->stats.feedback_unmatched++;
@@ -263,6 +262,14 @@ ems_sched_feedback_t ems_sched_feedback(ems_sched_core_t *core, uint32_t request
         ems_sched_device_state_t *dev = &core->device[s];
         if (dev->pending_id != 0u && dev->pending_id == request_id) {
             const bool late = dev->guard_expired;
+            if (dev->pending_entry < core->plan.entry_count) {
+                ems_sched_entry_stats_t *es = &core->entry[dev->pending_entry].stats;
+                const int64_t lat = (now_us - dev->submitted_us) / US_PER_MS;
+                es->last_latency_ms = (lat < 0) ? 0u : (uint32_t)lat;
+                if (es->last_latency_ms > es->max_latency_ms) {
+                    es->max_latency_ms = es->last_latency_ms;
+                }
+            }
             dev->pending_id = 0u;
             dev->pending_entry = EMS_SCHED_NO_ENTRY;
             dev->guard_expired = false;

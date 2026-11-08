@@ -1,6 +1,6 @@
 # MyEMS host unit tests (DP-WP4: D1 ems_measurement, D2 ems_register_map,
 # D3 ems_profile + generated configuration tables, D5 poll scheduler core,
-# D6 acquisition core).
+# D6 acquisition core, D7 activation checks and event ring).
 #
 # Builds the pure-C DP-WP4 components with the PC's compiler and runs them
 # with the Unity framework that ships inside ESP-IDF:
@@ -77,9 +77,17 @@ endif()
 
 # ------------------------------------ component under test (4A, DP-WP4 D3) ---
 set(EMS_PROFILE_DIR "${MYEMS_ROOT}/components/ems_profile")
-add_library(ems_profile STATIC "${EMS_PROFILE_DIR}/src/ems_config_crc.c")
+add_library(ems_profile STATIC
+    "${EMS_PROFILE_DIR}/src/ems_config_crc.c"
+    "${EMS_PROFILE_DIR}/src/ems_profile_activate.c")
 target_include_directories(ems_profile PUBLIC "${EMS_PROFILE_DIR}/include")
-target_link_libraries(ems_profile PUBLIC ems_register_map)
+target_link_libraries(ems_profile PUBLIC ems_register_map ems_measurement)
+
+# ------------------------------------------- event ring (DP-WP4 D7) ---
+set(EMS_DIAG_DIR "${MYEMS_ROOT}/components/ems_diag")
+add_library(ems_diag STATIC "${EMS_DIAG_DIR}/src/ems_event.c")
+target_include_directories(ems_diag PUBLIC "${EMS_DIAG_DIR}/include")
+target_compile_options(ems_diag PRIVATE ${EMS_WARNINGS})
 target_compile_options(ems_profile PRIVATE ${EMS_WARNINGS})
 
 # ------------------------------- scheduler core (4E, DP-WP4 D5), in main/ ---
@@ -140,9 +148,19 @@ target_include_directories(test_ems_acq_core PRIVATE "${MYEMS_ROOT}/main/generat
 target_link_libraries(test_ems_acq_core PRIVATE ems_sched_core ems_profile ems_register_map ems_measurement unity)
 target_compile_options(test_ems_acq_core PRIVATE ${EMS_WARNINGS})
 
-set(EMS_HOST_TARGETS ems_measurement ems_register_map ems_profile ems_sched_core
+# Activation checks and event ring (D7).
+add_executable(test_ems_d7
+    test_main_d7.c
+    test_ems_profile_activate.c
+    test_ems_event.c
+    "${MYEMS_ROOT}/main/generated/ems_config_gen.c")
+target_include_directories(test_ems_d7 PRIVATE "${MYEMS_ROOT}/main/generated")
+target_link_libraries(test_ems_d7 PRIVATE ems_profile ems_diag ems_register_map ems_measurement unity)
+target_compile_options(test_ems_d7 PRIVATE ${EMS_WARNINGS})
+
+set(EMS_HOST_TARGETS ems_measurement ems_register_map ems_profile ems_sched_core ems_diag
     test_ems_measurement test_ems_register_map test_ems_config_lab test_ems_config_decoder
-    test_ems_sched_core test_ems_acq_core)
+    test_ems_sched_core test_ems_acq_core test_ems_d7)
 if(EMS_HOST_SANITIZE AND NOT MSVC)
     foreach(t ${EMS_HOST_TARGETS})
         target_compile_options(${t} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -163,3 +181,4 @@ add_test(NAME ems_config_lab COMMAND test_ems_config_lab)
 add_test(NAME ems_config_decoder COMMAND test_ems_config_decoder)
 add_test(NAME ems_sched_core COMMAND test_ems_sched_core)
 add_test(NAME ems_acq_core COMMAND test_ems_acq_core)
+add_test(NAME ems_d7 COMMAND test_ems_d7)

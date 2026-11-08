@@ -40,6 +40,8 @@ ems_acq_init_status_t ems_acq_core_init(ems_acq_core_t *core, const ems_config_b
         core->ratio[s].pt = d->pt_ratio;
         core->apply_ratio[s] = (p->ratio_handling == EMS_RATIO_MYEMS_APPLIES);
         core->counter_max_rate[s] = p->counter_max_rate_per_hour;
+        core->comm_lost_threshold[s] = (d->comm_lost_threshold != 0u) ? d->comm_lost_threshold : 1u;
+        core->dev[s].mode = d->enabled ? (uint8_t)EMS_ACQ_DEV_ONLINE : (uint8_t)EMS_ACQ_DEV_DISABLED;
 
         uint8_t nc = 0u;
         for (uint16_t k = 0u; k < m->mapping_count; k++) {
@@ -170,6 +172,42 @@ static void decode_group(ems_acq_core_t *core, uint8_t slot, uint8_t group, cons
     }
 }
 
+/* -------------------------------------------------------- device state --- */
+
+/* The device answered (OK, wrong count or exception). */
+static void device_answered(ems_acq_core_t *core, uint8_t slot, ems_acq_outcome_t *o)
+{
+    ems_acq_device_stats_t *ds = &core->dev[slot];
+    ds->consecutive_failures = 0u;
+    if (ds->mode == (uint8_t)EMS_ACQ_DEV_OFFLINE) {
+        ds->mode = (uint8_t)EMS_ACQ_DEV_ONLINE;
+        ds->online_transitions++;
+        o->device_online = true;
+    }
+}
+
+static void device_failed(ems_acq_core_t *core, uint8_t slot, ems_acq_outcome_t *o)
+{
+    ems_acq_device_stats_t *ds = &core->dev[slot];
+    if (ds->consecutive_failures < 0xFFu) {
+        ds->consecutive_failures++;
+    }
+    if (ds->mode == (uint8_t)EMS_ACQ_DEV_ONLINE && ds->consecutive_failures >= core->comm_lost_threshold[slot]) {
+        ds->mode = (uint8_t)EMS_ACQ_DEV_OFFLINE;
+        ds->offline_transitions++;
+        (void)ems_state_set_device_comm_lost(slot);
+        o->device_offline = true;
+    }
+}
+
+ems_acq_dev_mode_t ems_acq_core_device_mode(const ems_acq_core_t *core, uint8_t slot)
+{
+    if (core == NULL || core->cfg == NULL || slot >= core->cfg->device_count) {
+        return EMS_ACQ_DEV_DISABLED;
+    }
+    return (ems_acq_dev_mode_t)core->dev[slot].mode;
+}
+
 /* ------------------------------------------------------------- process --- */
 
 void ems_acq_core_process(ems_acq_core_t *core, const ems_acq_result_t *r, int64_t now_us,
@@ -209,7 +247,6 @@ void ems_acq_core_process(ems_acq_core_t *core, const ems_acq_result_t *r, int64
 
     switch ((ems_acq_result_status_t)r->status) {
     case EMS_ACQ_RES_OK:
-        ds->consecutive_failures = 0u;
         if (r->registers == NULL || !ems_regmap_response_complete(grp, r->register_count)) {
             /* Design 9.3 "OK, register count wrong" / DEC-009 / RTE-003:
              * counted as a routing error, nothing decoded, group INVALID. */
@@ -223,25 +260,23 @@ void ems_acq_core_process(ems_acq_core_t *core, const ems_acq_result_t *r, int64
             o->kind = EMS_ACQ_OUT_OK;
             decode_group(core, slot, en->group_index, grp, r->registers, r->register_count, now_us, o);
         }
+        device_answered(core, slot, o);
         break;
 
     case EMS_ACQ_RES_EXCEPTION:
         /* The device answered: reachable, but the data of this group is unusable. */
-        ds->consecutive_failures = 0u;
         ds->exceptions++;
         ds->last_exception = r->exception_code;
         o->kind = EMS_ACQ_OUT_EXCEPTION;
         o->exception_code = r->exception_code;
         mark_group(core, slot, en->group_index, true, o);
+        device_answered(core, slot, o);
         break;
 
     case EMS_ACQ_RES_TIMEOUT:
     case EMS_ACQ_RES_CRC_ERROR:
     case EMS_ACQ_RES_PROTOCOL_ERROR:
     case EMS_ACQ_RES_TRANSPORT_ERROR:
-        if (ds->consecutive_failures < 0xFFu) {
-            ds->consecutive_failures++;
-        }
         if (r->status == EMS_ACQ_RES_TIMEOUT) {
             ds->timeouts++;
         } else if (r->status == EMS_ACQ_RES_CRC_ERROR) {
@@ -253,6 +288,7 @@ void ems_acq_core_process(ems_acq_core_t *core, const ems_acq_result_t *r, int64
         }
         o->kind = EMS_ACQ_OUT_FAILED;
         mark_group(core, slot, en->group_index, false, o);
+        device_failed(core, slot, o);
         break;
 
     case EMS_ACQ_RES_CANCELLED:

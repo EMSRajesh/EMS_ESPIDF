@@ -6,7 +6,7 @@
  * FreeRTOS wrapper around the pure-C scheduler core (ems_sched_core.h). The
  * task is the only owner of the scheduling state. Other tasks talk to it only
  * through its message queue: completion feedback (acquisition) and device
- * mode changes ONLINE/OFFLINE (acquisition, from D7).
+ * mode changes ONLINE/OFFLINE (acquisition, Design 9.4).
  */
 
 #include <stdbool.h>
@@ -39,6 +39,7 @@ typedef struct {
     uint8_t                 entry_count;
     uint32_t                health_flags;     /* EMS_SCHED_HEALTH_*              */
     uint32_t                queue_full;       /* messages refused: queue full    */
+    uint32_t                queue_hwm;        /* most messages waiting at once   */
 } ems_poll_scheduler_stats_t;
 
 esp_err_t ems_poll_scheduler_start(const ems_poll_scheduler_config_t *config,

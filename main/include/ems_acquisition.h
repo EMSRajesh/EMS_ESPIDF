@@ -11,7 +11,11 @@
  * on every wake-up). Every result is fed back to the scheduler.
  *
  * Readers (any task) use ems_state_get() / ems_state_snapshot_device().
- * Device ONLINE/OFFLINE handling comes in D7.
+ *
+ * DP-WP4 D7: device communication state (Design 9.4). After
+ * comm_lost_threshold consecutive failed transactions a device goes OFFLINE
+ * (all parameters COMM_LOST, scheduler probe mode); the first answer brings
+ * it back ONLINE. Events go to the event ring (ems_event.h) and the log.
  */
 
 #include <stddef.h>
@@ -62,6 +66,9 @@ esp_err_t ems_acquisition_get_device_stats(ems_acquisition_handle_t handle, uint
 
 /* Stop the scheduler first so no new requests are submitted, then stop acquisition. */
 esp_err_t ems_acquisition_stop(ems_acquisition_handle_t handle);
+
+/* "ONLINE", "OFFLINE", "DISABLED" (never NULL). */
+const char *ems_acquisition_mode_name(uint8_t mode);
 
 /* Text for a Modbus result status (never NULL). */
 const char *ems_acquisition_status_name(modbus_result_status_t status);

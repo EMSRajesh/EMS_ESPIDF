@@ -577,6 +577,33 @@ static void test_stale_submission_report_is_ignored(void)
     TEST_ASSERT_EQUAL_UINT32(0u, D.core.entry[0].stats.rejected);
 }
 
+/* Design 9.9: per-group latency, submit -> feedback. */
+static void test_latency_per_entry(void)
+{
+    drv_init(1, MS(100));
+    ems_sched_request_t r;
+    TEST_ASSERT_TRUE(ems_sched_next(&D.core, S(0.5), &r));
+    ems_sched_submitted(&D.core, &r, true, S(0.5));
+    (void)ems_sched_feedback(&D.core, r.request_id, S(0.5) + MS(140));
+    TEST_ASSERT_EQUAL_UINT32(140u, D.core.entry[0].stats.last_latency_ms);
+    TEST_ASSERT_EQUAL_UINT32(140u, D.core.entry[0].stats.max_latency_ms);
+    /* serve energy (1.5) and status (2.5) so that electrical is next at 5.5 */
+    for (int k = 0; k < 2; k++) {
+        TEST_ASSERT_TRUE(ems_sched_next(&D.core, S(3), &r));
+        ems_sched_submitted(&D.core, &r, true, S(3));
+        (void)ems_sched_feedback(&D.core, r.request_id, S(3) + MS(25));
+    }
+    TEST_ASSERT_EQUAL_UINT32(25u, D.core.entry[1].stats.last_latency_ms);
+    TEST_ASSERT_TRUE(ems_sched_next(&D.core, S(5.5), &r));
+    TEST_ASSERT_EQUAL_UINT8(0u, r.entry);
+    ems_sched_submitted(&D.core, &r, true, S(5.5));
+    (void)ems_sched_feedback(&D.core, r.request_id, S(5.5) + MS(60));
+    TEST_ASSERT_EQUAL_UINT32(60u, D.core.entry[0].stats.last_latency_ms);
+    TEST_ASSERT_EQUAL_UINT32(140u, D.core.entry[0].stats.max_latency_ms);
+    (void)ems_sched_feedback(&D.core, 0x12345678u, S(9));     /* unmatched: no change */
+    TEST_ASSERT_EQUAL_UINT32(60u, D.core.entry[0].stats.last_latency_ms);
+}
+
 void run_sched_core_tests(void)
 {
     RUN_TEST(test_plan_entries_and_order);
@@ -601,4 +628,5 @@ void run_sched_core_tests(void)
     RUN_TEST(test_device_mode_api);
     RUN_TEST(test_nothing_to_do_when_all_disabled);
     RUN_TEST(test_stale_submission_report_is_ignored);
+    RUN_TEST(test_latency_per_entry);
 }

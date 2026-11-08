@@ -1,16 +1,17 @@
 /*
- * MyEMS acquisition task (DP-WP4 milestone D6 state).
+ * MyEMS acquisition task (DP-WP4 milestones D6, D7).
  *
  * All decisions are in the pure-C core (ems_acq_core.c, host-tested). This
  * file adds the FreeRTOS task, the state-store lock, logging/events and the
  * periodic value dump.
  *
  * Log lines other tools parse (tools/wp4/myems_wp4_runner.py):
- *   VALUES slot=<n> <instance_id> count=<n>
+ *   VALUES slot=<n> <instance_id> mode=<ONLINE|OFFLINE|DISABLED> count=<n>
  *   VAL slot=<n> <param>=<value> <unit> q=<QUALITY> age_ms=<ms|-1> seq=<n>
  *   EVT_<NAME> slot=<n> ...
  */
 #include "ems_acquisition.h"
+#include "ems_event.h"
 #include "ems_stack_diag.h"
 
 #include <inttypes.h>
@@ -83,6 +84,16 @@ const char *ems_acquisition_status_name(modbus_result_status_t status)
     }
 }
 
+const char *ems_acquisition_mode_name(uint8_t mode)
+{
+    switch (mode) {
+    case EMS_ACQ_DEV_ONLINE:   return "ONLINE";
+    case EMS_ACQ_DEV_OFFLINE:  return "OFFLINE";
+    case EMS_ACQ_DEV_DISABLED: return "DISABLED";
+    default:                   return "UNKNOWN";
+    }
+}
+
 static const char *device_name(const struct ems_acquisition *acq, uint8_t slot)
 {
     if (acq->config != NULL && slot < acq->config->device_count &&
@@ -149,19 +160,23 @@ static void log_outcome(struct ems_acquisition *acq, const modbus_result_t *r,
                      (unsigned)o->group_index, (unsigned)o->out_of_range, (unsigned)o->invalid);
         }
         if (o->counter_discontinuities != 0U) {
+            (void)ems_event_emit(EMS_EVT_COUNTER_DISCONTINUITY, o->slot, o->discontinuity_param, 0U, now_us);
             ESP_LOGW(TAG, "EVT_COUNTER_DISCONTINUITY slot=%u %s param=%s: counter decreased or reset; "
                           "no delta, new baseline", (unsigned)o->slot, dev, param_name(o->discontinuity_param));
         }
         if (o->counter_rollovers != 0U) {
+            (void)ems_event_emit(EMS_EVT_COUNTER_ROLLOVER, o->slot, EMS_EVENT_NO_PARAM, o->counter_rollovers, now_us);
             ESP_LOGI(TAG, "EVT_COUNTER_ROLLOVER slot=%u %s", (unsigned)o->slot, dev);
         }
         break;
     case EMS_ACQ_OUT_MISMATCH:
+        (void)ems_event_emit(EMS_EVT_RESPONSE_MISMATCH, o->slot, EMS_EVENT_NO_PARAM, r->register_count, now_us);
         ESP_LOGW(TAG, "EVT_RESPONSE_MISMATCH slot=%u %s grp%u request=0x%08" PRIX32
                       " registers=%u: group INVALID", (unsigned)o->slot, dev, (unsigned)o->group_index,
                  r->request_id, (unsigned)r->register_count);
         break;
     case EMS_ACQ_OUT_EXCEPTION:
+        (void)ems_event_emit(EMS_EVT_MODBUS_EXCEPTION, o->slot, EMS_EVENT_NO_PARAM, o->exception_code, now_us);
         ESP_LOGW(TAG, "EVT_MODBUS_EXCEPTION slot=%u %s grp%u code=0x%02X: group INVALID",
                  (unsigned)o->slot, dev, (unsigned)o->group_index, (unsigned)o->exception_code);
         break;
@@ -186,6 +201,34 @@ static void log_outcome(struct ems_acquisition *acq, const modbus_result_t *r,
     }
 }
 
+/* Design 9.4: tell the scheduler (probe mode) and record the event. */
+static void handle_device_state(struct ems_acquisition *acq, const ems_acq_outcome_t *o, int64_t now_us)
+{
+    if (!o->device_offline && !o->device_online) {
+        return;
+    }
+    const uint8_t slot = o->slot;
+    const ems_cfg_device_t *d = &acq->config->devices[slot];
+    if (o->device_offline) {
+        (void)ems_event_emit(EMS_EVT_DEVICE_OFFLINE, slot, EMS_EVENT_NO_PARAM, o->consecutive_failures, now_us);
+        ESP_LOGW(TAG, "EVT_DEVICE_OFFLINE slot=%u %s: %u consecutive failed transactions; all parameters "
+                      "COMM_LOST; probing group %u every %" PRIu32 " ms",
+                 (unsigned)slot, device_name(acq, slot), (unsigned)o->consecutive_failures,
+                 (unsigned)d->probe_group, d->probe_interval_ms);
+    } else {
+        (void)ems_event_emit(EMS_EVT_DEVICE_ONLINE, slot, EMS_EVENT_NO_PARAM, 0U, now_us);
+        ESP_LOGI(TAG, "EVT_DEVICE_ONLINE slot=%u %s: device answered; all groups scheduled",
+                 (unsigned)slot, device_name(acq, slot));
+    }
+    const ems_sched_dev_mode_t mode = o->device_offline ? EMS_SCHED_DEV_OFFLINE : EMS_SCHED_DEV_ONLINE;
+    if (ems_poll_scheduler_set_device_mode(acq->scheduler, slot, mode) != ESP_OK) {
+        taskENTER_CRITICAL(&s_stats_mux);
+        acq->stats.feedback_failures++;
+        taskEXIT_CRITICAL(&s_stats_mux);
+        ESP_LOGE(TAG, "could not send device mode to the scheduler (queue full); slot=%u", (unsigned)slot);
+    }
+}
+
 static void process_result(struct ems_acquisition *acq, const modbus_result_t *r)
 {
     const int64_t now_us = esp_timer_get_time();
@@ -201,6 +244,7 @@ static void process_result(struct ems_acquisition *acq, const modbus_result_t *r
     ems_acq_outcome_t o;
     ems_acq_core_process(&acq->core, &in, now_us, &o);
     log_outcome(acq, r, &o, now_us);
+    handle_device_state(acq, &o, now_us);
 
     /* Every terminal result, including routing errors, releases the scheduler slot. */
     if (ems_poll_scheduler_notify_completion(acq->scheduler, r->request_id) != ESP_OK) {
@@ -218,7 +262,8 @@ static void dump_values(struct ems_acquisition *acq, int64_t now_us)
         if (ems_state_snapshot_device(s, acq->snapshot, EMS_MAX_PARAMS_PER_DEVICE, &n) != EMS_OK) {
             continue;
         }
-        ESP_LOGI(TAG, "VALUES slot=%u %s count=%u", (unsigned)s, device_name(acq, s), (unsigned)n);
+        ESP_LOGI(TAG, "VALUES slot=%u %s mode=%s count=%u", (unsigned)s, device_name(acq, s),
+                 ems_acquisition_mode_name((uint8_t)ems_acq_core_device_mode(&acq->core, s)), (unsigned)n);
         for (size_t i = 0; i < n; i++) {
             const ems_measurement_record_t *rec = &acq->snapshot[i];
             const long long age_ms = rec->sample_mono_us > 0 ? (now_us - rec->sample_mono_us) / 1000 : -1;

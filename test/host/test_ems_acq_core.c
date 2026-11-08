@@ -1,7 +1,8 @@
 /*
- * Acquisition core tests (DP-WP4 D6): routing (RTE), result -> quality (Q),
- * dictionary/record (UMD), ratios through the full path (CONV-004..006) and
- * counters through the full path (ENG). Uses the generated lab_bench tables
+ * Acquisition core tests (DP-WP4 D6/D7): routing (RTE), result -> quality (Q),
+ * dictionary/record (UMD), ratios through the full path (CONV-004..006),
+ * counters through the full path (ENG), device state (DEV) and the
+ * acquisition counters (DIAG-001/002). Uses the generated lab_bench tables
  * (main/generated) and modified copies of them.
  */
 #include <string.h>
@@ -504,6 +505,171 @@ static void test_disabled_device_not_supported(void)
     TEST_ASSERT_EQUAL_STRING("OK", ems_acq_outcome_name(EMS_ACQ_OUT_OK));
 }
 
+/* --------------------------------------------------------- DEV (D7) --- */
+static ems_acq_outcome_t fail_entry(uint8_t e, uint8_t status, int64_t t)
+{
+    ems_acq_outcome_t o;
+    ems_acq_result_t r = status_result(e, status, 0);
+    ems_acq_core_process(&A, &r, t, &o);
+    return o;
+}
+
+static void assert_all(uint8_t slot, ems_quality_t q)
+{
+    static const uint16_t ids[] = {
+        EMS_PARAM_AC_VOLTAGE_L1_N, EMS_PARAM_AC_CURRENT_L3, EMS_PARAM_AC_POWER_ACTIVE_TOTAL,
+        EMS_PARAM_AC_FREQUENCY, EMS_PARAM_AC_ENERGY_IMPORT_ACTIVE, EMS_PARAM_AC_ENERGY_EXPORT_ACTIVE,
+        EMS_PARAM_DEV_STATUS_CODE };
+    for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
+        assert_q(slot, ids[i], q);
+    }
+}
+
+static void test_DEV001_two_failures_take_device_offline(void)
+{
+    start_lab();
+    feed_all(S(1));
+    TEST_ASSERT_EQUAL_INT(EMS_ACQ_DEV_ONLINE, ems_acq_core_device_mode(&A, 0));
+    ems_acq_outcome_t o = fail_entry(0, EMS_ACQ_RES_TIMEOUT, S(6));
+    TEST_ASSERT_FALSE(o.device_offline);                         /* threshold 2 */
+    assert_q(0, EMS_PARAM_AC_VOLTAGE_L1_N, EMS_Q_STALE);
+    assert_q(0, EMS_PARAM_AC_ENERGY_IMPORT_ACTIVE, EMS_Q_GOOD);
+    o = fail_entry(1, EMS_ACQ_RES_TIMEOUT, S(9));
+    TEST_ASSERT_TRUE(o.device_offline);
+    TEST_ASSERT_EQUAL_INT(EMS_ACQ_DEV_OFFLINE, ems_acq_core_device_mode(&A, 0));
+    assert_all(0, EMS_Q_COMM_LOST);                              /* every parameter */
+    ASSERT_SAME_DOUBLE(12.5, rec(0, EMS_PARAM_AC_POWER_ACTIVE_TOTAL).value);   /* value kept */
+    TEST_ASSERT_EQUAL_INT64(S(1), rec(0, EMS_PARAM_AC_POWER_ACTIVE_TOTAL).sample_mono_us);
+    o = fail_entry(2, EMS_ACQ_RES_TIMEOUT, S(40));               /* failed probe */
+    TEST_ASSERT_FALSE(o.device_offline);                         /* reported once */
+    TEST_ASSERT_EQUAL_UINT32(1u, A.dev[0].offline_transitions);
+    TEST_ASSERT_EQUAL_UINT8(3u, A.dev[0].consecutive_failures);
+    TEST_ASSERT_EQUAL_UINT32(0u, ems_acq_core_tick(&A, S(1000)));  /* freshness leaves COMM_LOST */
+    assert_all(0, EMS_Q_COMM_LOST);
+}
+
+static void test_DEV001_threshold_from_configuration(void)
+{
+    copy_cfg();
+    C_dev[0].comm_lost_threshold = 1u;
+    start();
+    feed_all(S(1));
+    TEST_ASSERT_TRUE(fail_entry(0, EMS_ACQ_RES_TIMEOUT, S(6)).device_offline);
+    copy_cfg();
+    C_dev[0].comm_lost_threshold = 3u;
+    start();
+    TEST_ASSERT_FALSE(fail_entry(0, EMS_ACQ_RES_TIMEOUT, S(1)).device_offline);
+    TEST_ASSERT_FALSE(fail_entry(1, EMS_ACQ_RES_TIMEOUT, S(2)).device_offline);
+    TEST_ASSERT_TRUE(fail_entry(2, EMS_ACQ_RES_TIMEOUT, S(3)).device_offline);
+}
+
+static void test_DEV002_probe_ok_brings_device_online_groups_recover_separately(void)
+{
+    start_lab();
+    feed_all(S(1));
+    (void)fail_entry(0, EMS_ACQ_RES_TIMEOUT, S(6));
+    (void)fail_entry(1, EMS_ACQ_RES_TIMEOUT, S(9));
+    ems_acq_outcome_t o;
+    ems_acq_result_t r = ok_result(2, 5u);                       /* probe: status group */
+    ems_acq_core_process(&A, &r, S(40), &o);
+    TEST_ASSERT_TRUE(o.device_online);
+    TEST_ASSERT_EQUAL_INT(EMS_ACQ_DEV_ONLINE, ems_acq_core_device_mode(&A, 0));
+    TEST_ASSERT_EQUAL_UINT8(0u, o.consecutive_failures);
+    assert_q(0, EMS_PARAM_DEV_STATUS_CODE, EMS_Q_GOOD);
+    assert_q(0, EMS_PARAM_AC_VOLTAGE_L1_N, EMS_Q_COMM_LOST);      /* until its own read */
+    assert_q(0, EMS_PARAM_AC_ENERGY_IMPORT_ACTIVE, EMS_Q_COMM_LOST);
+    r = ok_result(0, 6u);
+    ems_acq_core_process(&A, &r, S(40.2), &o);
+    TEST_ASSERT_FALSE(o.device_online);                          /* reported once */
+    assert_q(0, EMS_PARAM_AC_VOLTAGE_L1_N, EMS_Q_GOOD);
+    assert_q(0, EMS_PARAM_AC_ENERGY_IMPORT_ACTIVE, EMS_Q_COMM_LOST);
+    TEST_ASSERT_EQUAL_UINT32(1u, A.dev[0].online_transitions);
+}
+
+static void test_DEV002_exception_on_probe_also_brings_device_online(void)
+{
+    start_lab();
+    (void)fail_entry(0, EMS_ACQ_RES_TIMEOUT, S(1));
+    (void)fail_entry(1, EMS_ACQ_RES_TIMEOUT, S(2));
+    ems_acq_outcome_t o;
+    ems_acq_result_t r = status_result(2, EMS_ACQ_RES_EXCEPTION, 2u);
+    ems_acq_core_process(&A, &r, S(32), &o);
+    TEST_ASSERT_TRUE(o.device_online);
+    assert_q(0, EMS_PARAM_DEV_STATUS_CODE, EMS_Q_INVALID);
+}
+
+static void test_DEV004_exceptions_never_take_device_offline(void)
+{
+    start_lab();
+    feed_all(S(1));
+    for (int i = 0; i < 5; i++) {
+        ems_acq_outcome_t o;
+        ems_acq_result_t r = status_result(1, EMS_ACQ_RES_EXCEPTION, 2u);
+        ems_acq_core_process(&A, &r, S(10 + i), &o);
+        TEST_ASSERT_FALSE(o.device_offline);
+        o = fail_entry(0, EMS_ACQ_RES_TIMEOUT, S(10.5 + i));       /* 1 failure, then reset */
+        TEST_ASSERT_FALSE(o.device_offline);
+    }
+    TEST_ASSERT_EQUAL_INT(EMS_ACQ_DEV_ONLINE, ems_acq_core_device_mode(&A, 0));
+    assert_q(0, EMS_PARAM_AC_ENERGY_IMPORT_ACTIVE, EMS_Q_INVALID);
+}
+
+static void test_DEV006_crc_and_protocol_errors_count_like_timeouts(void)
+{
+    start_lab();
+    feed_all(S(1));
+    TEST_ASSERT_FALSE(fail_entry(0, EMS_ACQ_RES_CRC_ERROR, S(2)).device_offline);
+    TEST_ASSERT_TRUE(fail_entry(1, EMS_ACQ_RES_PROTOCOL_ERROR, S(3)).device_offline);
+    assert_all(0, EMS_Q_COMM_LOST);
+}
+
+static void test_cancelled_does_not_reset_failure_count(void)
+{
+    start_lab();
+    (void)fail_entry(0, EMS_ACQ_RES_TIMEOUT, S(1));
+    (void)fail_entry(1, EMS_ACQ_RES_CANCELLED, S(2));
+    TEST_ASSERT_TRUE(fail_entry(2, EMS_ACQ_RES_TIMEOUT, S(3)).device_offline);
+}
+
+static void test_DEV005_disabled_device_mode(void)
+{
+    copy_cfg();
+    C_dev[1] = C_dev[0];
+    C_dev[1].slot = 1u;
+    C_dev[1].slave_id = 2u;
+    C_dev[1].enabled = false;
+    C.device_count = 2u;
+    start();
+    TEST_ASSERT_EQUAL_INT(EMS_ACQ_DEV_DISABLED, ems_acq_core_device_mode(&A, 1));
+    TEST_ASSERT_EQUAL_INT(EMS_ACQ_DEV_ONLINE, ems_acq_core_device_mode(&A, 0));
+    TEST_ASSERT_EQUAL_INT(EMS_ACQ_DEV_DISABLED, ems_acq_core_device_mode(&A, 3));   /* no such slot */
+}
+
+/* DIAG-001/002: scripted sequence of 10 OK, 2 timeouts, 1 exception. */
+static void test_DIAG001_002_counters_match_script(void)
+{
+    start_lab();
+    int64_t t = 0;
+    for (int i = 0; i < 10; i++) {
+        t += S(1);
+        ems_acq_result_t r = ok_result((uint8_t)(i % 3), (uint32_t)i + 1u);
+        ems_acq_core_process(&A, &r, t, NULL);
+        if (i == 3 || i == 7) {
+            (void)fail_entry(0, EMS_ACQ_RES_TIMEOUT, t + S(0.5));
+        }
+    }
+    ems_acq_result_t ex = status_result(1, EMS_ACQ_RES_EXCEPTION, 3u);
+    ems_acq_core_process(&A, &ex, t + S(0.7), NULL);
+    const ems_acq_device_stats_t *d = &A.dev[0];
+    TEST_ASSERT_EQUAL_UINT32(10u, d->ok);
+    TEST_ASSERT_EQUAL_UINT32(2u, d->timeouts);
+    TEST_ASSERT_EQUAL_UINT32(1u, d->exceptions);
+    TEST_ASSERT_EQUAL_UINT8(3u, d->last_exception);
+    TEST_ASSERT_EQUAL_UINT32(0u, d->offline_transitions);       /* never 2 in a row */
+    TEST_ASSERT_EQUAL_UINT32(13u, A.stats.results);
+    TEST_ASSERT_EQUAL_INT64(t, d->last_ok_us);                   /* DIAG-002 */
+}
+
 void run_acq_core_tests(void)
 {
     RUN_TEST(test_init_layout_and_Q001_initializing);
@@ -528,4 +694,13 @@ void run_acq_core_tests(void)
     RUN_TEST(test_ENG_counters_through_full_path);
     RUN_TEST(test_ENG_out_of_range_counter_does_not_move_baseline);
     RUN_TEST(test_disabled_device_not_supported);
+    RUN_TEST(test_DEV001_two_failures_take_device_offline);
+    RUN_TEST(test_DEV001_threshold_from_configuration);
+    RUN_TEST(test_DEV002_probe_ok_brings_device_online_groups_recover_separately);
+    RUN_TEST(test_DEV002_exception_on_probe_also_brings_device_online);
+    RUN_TEST(test_DEV004_exceptions_never_take_device_offline);
+    RUN_TEST(test_DEV006_crc_and_protocol_errors_count_like_timeouts);
+    RUN_TEST(test_cancelled_does_not_reset_failure_count);
+    RUN_TEST(test_DEV005_disabled_device_mode);
+    RUN_TEST(test_DIAG001_002_counters_match_script);
 }
