@@ -100,7 +100,7 @@ class SchedCheckTests(unittest.TestCase):
         self.assertTrue(any("energy offset 1000 ms" in ln and ln.startswith("FAIL") for ln in rep.lines))
 
     def test_offset_check_independent_of_when_the_log_starts(self):
-        ev = [e for e in schedule() if e[0] > 23000]        # simulator started late
+        ev = [e for e in schedule(duration_ms=130000) if e[0] > 23000]   # simulator started late
         self.assertPass(run(LAB, make_log(ev)))
 
     def test_unexpected_request_fails(self):
@@ -111,6 +111,21 @@ class SchedCheckTests(unittest.TestCase):
         ev = schedule() + [(10500 + 5000 * 2 + 100, 1, 14, 4)]
         rep = run(LAB, make_log(ev, mode="SLOW:400"))
         self.assertFailIn(rep, "SCH-003")
+
+    def test_late_first_polls_when_esp32_started_first(self):
+        """Real D5 HIL run: the ESP32 polled before the simulator opened COM12, so the
+        first energy and electrical polls were late; afterwards back on the grid."""
+        ev = [e for e in schedule(base=5828.0 - 500.0) if e[0] > 5000.0]
+        ev += [(1156.0, 1, 14, 4), (1219.0, 1, 0, 14)]
+        rep = run(LAB, make_log(ev))
+        self.assertPass(rep)
+        self.assertTrue(any("first poll at 1156 ms not judged" in ln for ln in rep.lines))
+
+    def test_late_second_poll_still_fails(self):
+        ev = schedule()
+        ev = [e for e in ev if not (e[2] == 0 and e[0] == 10000 + 500 + 5000)]
+        ev.append((10000 + 500 + 5000 + 400, 1, 0, 14))
+        self.assertFailIn(run(LAB, make_log(ev)), "SCH-001")
 
     def test_too_short_run_fails(self):
         self.assertFailIn(run(LAB, make_log(schedule(duration_ms=20000))), "SCH-001")

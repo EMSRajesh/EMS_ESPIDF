@@ -13,6 +13,11 @@ Checks (Test Spec Section 14):
            that slave was still pending (OVERLAP lines; meaningful with SLOW)
   extra    every request matches a configured poll group (nothing else polled)
 
+The first poll of each group is not used for SCH-001/002: if the ESP32 was
+already polling before the simulator opened the port, that poll is one that
+waited behind failed (unanswered) transactions and is late by design. From
+the second poll on, every gap and offset must be within tolerance.
+
 Usage (project root, after a run of at least 70 s):
   python tools/wp4/wp4_sched_check.py --site config/site/lab_bench.site.json --sim-log tools/test_results/sim.log
 Only the last simulator run in the log file (after the last START line) is checked.
@@ -104,10 +109,13 @@ def analyse(layout: dict, log_lines: list[str], tol_ms: float = 100.0, min_polls
     for g in groups.values():
         label = f"slave {g.slave} {g.name:<10} FC{g.fc:02d} {g.start}+{g.count}"
         n = len(g.times)
-        if n < min_polls:
-            rep.check(False, "SCH-001", f"{label}: only {n} polls (need >= {min_polls}; run longer)")
+        if n < min_polls + 1:
+            rep.check(False, "SCH-001", f"{label}: only {n} polls (need >= {min_polls + 1}; run longer)")
             continue
-        gaps = [b - a for a, b in zip(g.times, g.times[1:])]
+        if g.times[1] - g.times[0] != g.interval_ms:
+            rep.info(f"{label}: first poll at {g.times[0]:.0f} ms not judged (may have waited for the simulator)")
+        steady = g.times[1:]
+        gaps = [b - a for a, b in zip(steady, steady[1:])]
         worst = max(abs(x - g.interval_ms) for x in gaps)
         rep.check(worst <= tol_ms, "SCH-001",
                   f"{label}: {n} polls, interval {g.interval_ms:.0f} ms, gaps {min(gaps):.0f}..{max(gaps):.0f} ms "
@@ -121,15 +129,17 @@ def analyse(layout: dict, log_lines: list[str], tol_ms: float = 100.0, min_polls
             continue
         gs = [groups[(d["slave_id"], g["function_code"], g["start"], g["count"])] for g in d["poll_groups"]]
         offs = [g.get("offset_ms") for g in d["poll_groups"]]
-        if any(o is None for o in offs) or not gs[0].times:
+        if any(o is None for o in offs) or len(gs[0].times) < 2:
             continue
-        base_t, base_off, base_iv = gs[0].times[0], offs[0], gs[0].interval_ms
+        base_t, base_off, base_iv = gs[0].times[1], offs[0], gs[0].interval_ms
         for g, off in zip(gs[1:], offs[1:]):
-            if not g.times:
+            if len(g.times) < 2:
                 continue
-            # phase of g relative to the first group's grid, modulo the first group's interval
-            phase = (g.times[0] - base_t - (off - base_off)) % base_iv
-            dev = min(phase, base_iv - phase)
+            # worst phase of g's steady polls relative to the first group's grid
+            dev = 0.0
+            for t in g.times[1:]:
+                phase = (t - base_t - (off - base_off)) % base_iv
+                dev = max(dev, min(phase, base_iv - phase))
             rep.check(dev <= tol_ms, "SCH-001",
                       f"slave {g.slave} {g.name} offset {off - base_off:.0f} ms after {gs[0].name}: "
                       f"deviation {dev:.0f} ms")
