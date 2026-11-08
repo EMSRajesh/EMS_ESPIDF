@@ -1,3 +1,12 @@
+# Generated configuration tables: lab_bench by default; other simulation
+# sites (D9) are selected with the MYEMS_SIM_SITE choice in sdkconfig.
+set(MYEMS_GEN_DIR "generated")
+if(CONFIG_MYEMS_SIM_SITE_LAB_2DEV)
+    set(MYEMS_GEN_DIR "generated_sites/lab_bench_2dev")
+elseif(CONFIG_MYEMS_SIM_SITE_LAB_CT200)
+    set(MYEMS_GEN_DIR "generated_sites/lab_ratio_ct200")
+endif()
+
 idf_component_register(
     SRCS
         "app_main.c"
@@ -7,8 +16,8 @@ idf_component_register(
         "ems_acquisition.c"
         "ems_bus_health.c"
         "modbus_self_test.c"
-        "generated/ems_config_gen.c"
-    INCLUDE_DIRS "." "include" "generated"
+        "${MYEMS_GEN_DIR}/ems_config_gen.c"
+    INCLUDE_DIRS "." "include" "${MYEMS_GEN_DIR}"
     REQUIRES
         rs485_transport
         modbus_rtu_master

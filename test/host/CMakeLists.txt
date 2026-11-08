@@ -169,9 +169,29 @@ add_executable(test_ems_d8
 target_link_libraries(test_ems_d8 PRIVATE ems_bus_health unity)
 target_compile_options(test_ems_d8 PRIVATE ${EMS_WARNINGS})
 
+# Per-site firmware tables (D9 build modes Wp4Sim2Dev, Wp4Ratio): one executable per site.
+foreach(site 2dev ct200)
+    if(site STREQUAL "2dev")
+        set(site_dir "${MYEMS_ROOT}/main/generated_sites/lab_bench_2dev")
+    else()
+        set(site_dir "${MYEMS_ROOT}/main/generated_sites/lab_ratio_ct200")
+    endif()
+    string(TOUPPER "${site}" SITE_UPPER)
+    add_executable(test_ems_config_site_${site}
+        test_main_config_site.c
+        test_ems_config_common.c
+        test_ems_config_site.c
+        "${site_dir}/ems_config_gen.c")
+    target_include_directories(test_ems_config_site_${site} PRIVATE "${site_dir}")
+    target_compile_definitions(test_ems_config_site_${site} PRIVATE EMS_TEST_SITE_${SITE_UPPER})
+    target_link_libraries(test_ems_config_site_${site} PRIVATE ems_sched_core ems_profile ems_register_map ems_measurement unity)
+    target_compile_options(test_ems_config_site_${site} PRIVATE ${EMS_WARNINGS})
+endforeach()
+
 set(EMS_HOST_TARGETS ems_measurement ems_register_map ems_profile ems_sched_core ems_diag ems_bus_health
     test_ems_measurement test_ems_register_map test_ems_config_lab test_ems_config_decoder
-    test_ems_sched_core test_ems_acq_core test_ems_d7 test_ems_d8)
+    test_ems_sched_core test_ems_acq_core test_ems_d7 test_ems_d8
+    test_ems_config_site_2dev test_ems_config_site_ct200)
 if(EMS_HOST_SANITIZE AND NOT MSVC)
     foreach(t ${EMS_HOST_TARGETS})
         target_compile_options(${t} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -194,3 +214,5 @@ add_test(NAME ems_sched_core COMMAND test_ems_sched_core)
 add_test(NAME ems_acq_core COMMAND test_ems_acq_core)
 add_test(NAME ems_d7 COMMAND test_ems_d7)
 add_test(NAME ems_d8 COMMAND test_ems_d8)
+add_test(NAME ems_config_site_2dev COMMAND test_ems_config_site_2dev)
+add_test(NAME ems_config_site_ct200 COMMAND test_ems_config_site_ct200)

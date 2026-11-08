@@ -202,8 +202,9 @@ class EscAnalysisTests(unittest.TestCase):
 class ControlTests(unittest.TestCase):
 
     def test_bus_phase_control_text(self):
-        self.assertEqual("mode * NORMAL\nbus BABBLE\n", run.control_text("BUS:BABBLE"))
-        self.assertEqual("bus QUIET\nmode * EXCEPTION:02@energy\n", run.control_text("EXCEPTION:02@energy"))
+        self.assertEqual("bus QUIET\nmode * NORMAL\nbus BABBLE\n", run.control_text("BUS:BABBLE"))
+        self.assertEqual("bus QUIET\nmode * NORMAL\nmode * EXCEPTION:02@energy\n",
+                         run.control_text("EXCEPTION:02@energy"))
 
     def test_esc_suite_definition(self):
         self.assertEqual(["normal", "fault", "fail_closed"], [p[0] for p in run.SUITE_ESC])

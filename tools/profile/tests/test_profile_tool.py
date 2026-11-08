@@ -32,6 +32,7 @@ DECODER = CONFIG / "site" / "lab_decoder_test.site.json"
 MAP_FILE = "maps/myems_sim_acmeter_3ph.map.json"
 PROFILE_FILE = "profiles/ac_meter_3ph_sim.profile.json"
 DECODER_FIXTURE = ROOT / "test" / "host" / "generated" / "decoder_test"
+SITE_TABLES = ROOT / "main" / "generated_sites"          # D9: per-site firmware tables
 ERROR_RE = re.compile(r"^ERROR \[V-\d\d\] [^:]+: .+: .+$")
 
 
@@ -195,6 +196,20 @@ class GenTests(unittest.TestCase):
         rc, _, err = run("generate", "--site", str(DECODER), "--target", "sim", "--check",
                          "--out-dir", str(DECODER_FIXTURE))
         self.assertEqual(0, rc, err)
+        for site in (LAB2, CT200):                       # D9 build modes Wp4Sim2Dev, Wp4Ratio
+            rc, _, err = run("generate", "--site", str(site), "--target", "sim", "--check",
+                             "--out-dir", str(SITE_TABLES / site.name.replace(".site.json", "")))
+            self.assertEqual(0, rc, err)
+
+    def test_regenerate_comment_names_the_output_folder(self):
+        model, _ = tool.build_model(LAB2, "sim")
+        default = tool.render(model)[0]
+        self.assertIn("lab_bench_2dev.site.json --target sim\n", default)
+        self.assertNotIn("--out-dir", default)
+        self.assertNotIn("--out-dir", tool.render(model, tool.DEFAULT_OUT_DIR)[0])
+        h = tool.render(model, SITE_TABLES / "lab_bench_2dev")[0]
+        self.assertIn("--target sim --out-dir main/generated_sites/lab_bench_2dev\n", h)
+        self.assertIn("--out-dir <OUT_DIR>\n", tool.render(model, Path("/tmp/x"))[0])
 
     def test_check_mode_detects_stale_files(self):
         with tempfile.TemporaryDirectory() as d:

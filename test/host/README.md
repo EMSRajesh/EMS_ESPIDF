@@ -12,6 +12,7 @@ Pure-C DP-WP4 code is tested on the PC, without the ESP32:
 | `test_ems_acq_core` | `main/ems_acq_core.c` + `main/generated` (routing, result → quality, freshness, ratios and counters through the full path, device ONLINE/OFFLINE, bus-fault OFFLINE) | D6, D7, D8 | 33 |
 | `test_ems_d7` | `components/ems_profile` activation checks on corrupted copies of `main/generated`; `components/ems_diag` event ring | D7 | 20 |
 | `test_ems_d8` | `main/ems_bus_health.c` (bus health derived from the transport and master counters, latched fault, master health report) | D8 | 14 |
+| `test_ems_config_site_2dev`, `test_ems_config_site_ct200` | `main/generated_sites/<site>` (firmware tables of build modes Wp4Sim2Dev, Wp4Ratio): CRC, firmware validation, activation, plan | D9 | 8 each |
 
 ## One-time setup (Windows)
 
@@ -32,7 +33,7 @@ cmake --build build_host
 ctest --test-dir build_host --output-on-failure
 ```
 
-Expected: `100% tests passed, 0 tests failed out of 8`. For per-test output run any of the `.\build_host\test_*.exe` files.
+Expected: `100% tests passed, 0 tests failed out of 10`. For per-test output run any of the `.\build_host\test_*.exe` files.
 
 `build_host` is ignored by Git. To start clean, delete the folder.
 
@@ -47,6 +48,8 @@ These include checks that the generated files are up to date: `components/ems_me
 ```powershell
 python tools/profile/myems_profile_tool.py generate --site config/site/lab_bench.site.json --target sim
 python tools/profile/myems_profile_tool.py generate --site config/site/lab_decoder_test.site.json --target sim --out-dir test/host/generated/decoder_test
+python tools/profile/myems_profile_tool.py generate --site config/site/lab_bench_2dev.site.json --target sim --out-dir main/generated_sites/lab_bench_2dev
+python tools/profile/myems_profile_tool.py generate --site config/site/lab_ratio_ct200.site.json --target sim --out-dir main/generated_sites/lab_ratio_ct200
 ```
 
 ## Options

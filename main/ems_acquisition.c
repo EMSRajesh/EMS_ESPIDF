@@ -34,6 +34,11 @@ struct ems_acquisition {
     rs485_handle_t transport;
     ems_bus_health_t bus;                                 /* task-only            */
     bool bus_hold_sent;                                   /* scheduler has the hold */
+    uint32_t proc_elec_last_us;                           /* task-only (PERF-006) */
+    uint32_t proc_elec_max_us;
+    uint32_t proc_max_us;
+    uint32_t outstanding_hwm;                             /* task-only (PERF-004) */
+    uint32_t backlog_hwm;
     ems_poll_scheduler_handle_t scheduler;
     const ems_sched_plan_t *plan;
     const ems_config_build_t *config;
@@ -150,6 +155,11 @@ static void publish_stats(struct ems_acquisition *acq, uint32_t stale_changed)
     st.bus_transport = acq->bus.last_transport;
     st.bus_faults = acq->bus.faults;
     st.bus_recoveries = acq->bus.recoveries;
+    st.proc_elec_last_us = acq->proc_elec_last_us;
+    st.proc_elec_max_us = acq->proc_elec_max_us;
+    st.proc_max_us = acq->proc_max_us;
+    st.master_outstanding_hwm = acq->outstanding_hwm;
+    st.completion_backlog_hwm = acq->backlog_hwm;
     acq->stats = st;
     memcpy(acq->dev_stats, acq->core.dev, sizeof(acq->dev_stats));
     taskEXIT_CRITICAL(&s_stats_mux);
@@ -252,6 +262,18 @@ static void process_result(struct ems_acquisition *acq, const modbus_result_t *r
     };
     ems_acq_outcome_t o;
     ems_acq_core_process(&acq->core, &in, now_us, &o);
+    /* PERF-006: processing time per result (routing, decode, quality, publish) */
+    const int64_t dt = esp_timer_get_time() - now_us;
+    const uint32_t proc_us = (dt < 0) ? 0U : (dt > (int64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)dt);
+    if (proc_us > acq->proc_max_us) {
+        acq->proc_max_us = proc_us;
+    }
+    if (o.kind == (uint8_t)EMS_ACQ_OUT_OK && o.group_index == 0U) {
+        acq->proc_elec_last_us = proc_us;
+        if (proc_us > acq->proc_elec_max_us) {
+            acq->proc_elec_max_us = proc_us;
+        }
+    }
     log_outcome(acq, r, &o, now_us);
     handle_device_state(acq, &o, now_us);
 
@@ -352,6 +374,15 @@ static void bus_check(struct ems_acquisition *acq, int64_t now_us)
         in.counters_valid = true;
         in.accepted = ms.requests_accepted;
         in.completed = ms.requests_completed;
+        /* PERF-004 (derived; the master has no queue high-water API) */
+        const uint32_t outstanding = ms.requests_accepted - ms.requests_completed;
+        const uint32_t backlog = ms.requests_completed - acq->core.stats.results;
+        if (outstanding > acq->outstanding_hwm && outstanding < 0x10000U) {
+            acq->outstanding_hwm = outstanding;
+        }
+        if (backlog > acq->backlog_hwm && backlog < 0x10000U) {
+            acq->backlog_hwm = backlog;
+        }
     }
     switch (ems_bus_health_update(&acq->bus, &in, now_us)) {
     case EMS_BUS_CHANGE_FAULT:

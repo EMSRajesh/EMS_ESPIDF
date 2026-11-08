@@ -4,7 +4,7 @@
 |---|---|
 | `myems_ac_meter_sim.py` | AC meter simulator (Modbus RTU slave) for DP-WP4 HIL tests. **Simulation only.** |
 | `tests/test_ac_meter_sim.py` | Simulator tests SIM-001…SIM-012 and more; no serial port needed |
-| `myems_wp4_runner.py` | HIL runner, suites `d6`, `d7`, `esc` (D8), `reject` |
+| `myems_wp4_runner.py` | HIL runner, suites `d6`, `d7`, `esc` (D8), `reject`, `two_dev`, `ratio`, `load`, `soak` (D9); see its `--help` and `docs/D9_CHECKLIST.md` |
 | `tests/test_wp4_runner*.py` | Tests of the runner analyses on scripted logs |
 
 The COM simulators in `tools/` (`myems_usb_rs485_modbus_slave_sim_*.py`) are unchanged and are still used for the COM regression tests (REG-02, REG-03).

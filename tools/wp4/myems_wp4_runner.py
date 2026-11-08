@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MyEMS DP-WP4 HIL runner (suites d6, d7, esc, reject).
+"""MyEMS DP-WP4 HIL runner (suites d6, d7, esc, reject, two_dev, ratio, load, soak).
 
 Runs the AC meter simulator on the RS-485 adapter, captures the ESP32 console,
 steps the simulator through a sequence of modes (control file) and checks the
@@ -24,6 +24,16 @@ Suites:
           master cannot retry recovery). Flash Wp4Sim again for other suites.
   reject  production firmware must refuse the simulation configuration
           (CFG-018); flash it first with -Mode Production (~1 min)
+  two_dev two meters (-Mode Wp4Sim2Dev, site lab_bench_2dev, ~4 min): DEV-003,
+          RTE-005, SCH-003 (no overlap)
+  ratio   CT 200 (-Mode Wp4Ratio, site lab_ratio_ct200, ~1 min): CONV-004..006
+          vectors of Test Spec 4.3 on the board
+  load    PERF-001 bus load, two meters NORMAL (-Mode Wp4Sim2Dev); default
+          60 min (--duration-min); also PERF-003/004/006
+  soak    PERF-005 soak (-Mode Wp4Sim): NORMAL / TIMEOUT /
+          OFFLINE_THEN_RECOVER:300 every 10 min; default 24 h
+          (--duration-min 60 for the dry run); PERF-002..006. Ctrl+C stops
+          early and still analyses what was captured.
 All suites also check: no reboot, no routing errors, stack margin.
 Result: FAIL if any check fails; BLOCK rows (requirement not testable against
 the current COM layer) are listed but do not fail the run.
@@ -77,6 +87,14 @@ MASTER_FAIL_RE = re.compile(r"RS485 bus unavailable; recovery failed: (.+)")
 BUS_HOLD_RE = re.compile(r"BUS_HOLD: polling stopped")
 BUS_CANCEL_RE = re.compile(r"BUS_HOLD: cancelled (\d+) request")
 CANCELLED_RE = re.compile(r"ems_acquisition: \S+ grp\d+ request=0x[0-9A-Fa-f]+ CANCELLED")
+PERF_RE = re.compile(r"PERF heap_free=(\d+) heap_min=(\d+) \| acq_proc_us elec_last=(\d+) elec_max=(\d+) "
+                     r"max=(\d+) \| master_outstanding_hwm=(\d+) completion_backlog_hwm=(\d+)")
+PERF_START_RE = re.compile(r"PERF heap_free_at_start=(\d+) heap_min_at_start=(\d+)")
+STACK_ANY_RE = re.compile(r"STACK task=(\S+) allocated=(\d+)B current_free=(\d+)B min_ever_free=(\d+)B")
+BACKPRESSURE_RE = re.compile(r"DIAG bus .* backpressure=(\d+)")
+DIAG_ENTRY_RE = re.compile(r"DIAG entry=(\d+) slot=(\d+) grp=(\d+) submitted=(\d+) skipped=(\d+) rejected=(\d+) "
+                           r"latency_ms=(\d+) max_latency_ms=(\d+)")
+SIM_TX_RE = re.compile(r"^(\S+)\s+[0-9.]+ TX slave=(\d+) ")
 SIM_RX_RE = re.compile(r"^(\S+)\s+[0-9.]+ RX slave=(\d+) fc=([0-9A-F]{2}) ((?:[0-9A-F]{2} )+)mode=")
 CRASH_RE = re.compile(r"Guru Meditation|abort\(\) was called|Backtrace:|Rebooting\.\.\.|STACK CRITICAL")
 RESET_RE = re.compile(r"\brst:0x[0-9a-fA-F]+")
@@ -131,8 +149,56 @@ SUITE_REJECT = [
     ("observe", "NORMAL", 25),
 ]
 
-SUITES = {"d6": SUITE_D6, "d7": SUITE_D7, "esc": SUITE_ESC, "reject": SUITE_REJECT}
-BOOT_TARGET = {"d6": "sim", "d7": "sim", "esc": "sim", "reject": "prod"}
+# D9: two meters on one bus. Slave 1 stops answering; slave 2 must not notice
+# (DEV-003), then slave 1 comes back through probing.
+SUITE_TWO_DEV = [
+    ("normal", "NORMAL", 40),
+    ("dev1_offline", "1=TIMEOUT", 90),
+    ("recover", "NORMAL", 45),
+    ("final", "NORMAL", 15),
+]
+
+# D9: Test Spec 4.3 ratio vectors on the board (meter-side secondary values, CT 200).
+RATIO_SETS = "set 1 ac.current.l1 2.5|set 1 ac.current.l2 6.0|set 1 ac.power.active.total 1.0"
+SUITE_RATIO = [
+    ("vectors", "NORMAL|" + RATIO_SETS, 30),
+]
+
+SOAK_CYCLE = [("normal", "NORMAL"), ("timeout", "TIMEOUT"), ("offline_recover", "OFFLINE_THEN_RECOVER:300")]
+SOAK_PHASE_S = 600
+OTR_SILENT_S = 300
+
+
+def soak_phases(duration_min: int) -> list[tuple[str, str, int]]:
+    """PERF-005: the simulator mode changes every 10 min, cycling SOAK_CYCLE."""
+    n = max(len(SOAK_CYCLE), duration_min * 60 // SOAK_PHASE_S)
+    return [(f"{SOAK_CYCLE[k % 3][0]}_{k + 1}", SOAK_CYCLE[k % 3][1], SOAK_PHASE_S) for k in range(n)]
+
+
+def load_phases(duration_min: int) -> list[tuple[str, str, int]]:
+    return [("load", "NORMAL", max(60, duration_min * 60))]
+
+
+SUITES = {"d6": SUITE_D6, "d7": SUITE_D7, "esc": SUITE_ESC, "reject": SUITE_REJECT,
+          "two_dev": SUITE_TWO_DEV, "ratio": SUITE_RATIO, "load": None, "soak": None}
+BOOT_TARGET = {"d6": "sim", "d7": "sim", "esc": "sim", "reject": "prod", "two_dev": "sim", "ratio": "sim",
+               "load": "sim", "soak": "sim"}
+SUITE_SITE = {"two_dev": "lab_bench_2dev", "load": "lab_bench_2dev", "ratio": "lab_ratio_ct200"}
+SUITE_BUILD = {"two_dev": "Wp4Sim2Dev", "load": "Wp4Sim2Dev", "ratio": "Wp4Ratio", "esc": "Wp4Esc",
+               "reject": "Production"}
+DEFAULT_DURATION_MIN = {"load": 60, "soak": 1440}
+
+
+def suite_phases(name: str, duration_min: int | None = None) -> list[tuple[str, str, int]]:
+    if name == "soak":
+        return soak_phases(duration_min or DEFAULT_DURATION_MIN["soak"])
+    if name == "load":
+        return load_phases(duration_min or DEFAULT_DURATION_MIN["load"])
+    return SUITES[name]
+
+
+def suite_site(name: str) -> Path:
+    return PROJECT_ROOT / "config" / "site" / f"{SUITE_SITE.get(name, 'lab_bench')}.site.json"
 CR_D8 = "COM change request CR-D8-01 (docs/D8_ESCALATION_REVIEW.md)"
 
 
@@ -652,7 +718,289 @@ def analyse_esc(lines: list[tuple[float, str]], phases: list[Phase], expected_cr
     return rep
 
 
-ANALYSERS = {"d6": analyse_d6, "d7": analyse_d7, "esc": analyse_esc, "reject": analyse_reject}
+
+# ============================================================== D9 suites ===
+def parse_sim_tx(sim_lines: list[str]) -> list[tuple[float, int]]:
+    """Simulator log -> (wall time, slave) of every reply sent."""
+    out = []
+    for ln in sim_lines:
+        m = SIM_TX_RE.match(ln)
+        if m:
+            try:
+                out.append((dt.datetime.fromisoformat(m.group(1)).timestamp(), int(m.group(2))))
+            except ValueError:
+                continue
+    return out
+
+
+def _no_overlap(rep: Report, sim_lines: list[str], test: str) -> None:
+    """SCH-003 / PERF-001: one transaction at a time on the bus (simulator view)."""
+    overlaps = [ln for ln in sim_lines if "OVERLAP" in ln]
+    rep.check(not overlaps, test, f"{len(overlaps)} OVERLAP line(s) in the simulator log (expected 0)")
+
+
+def _perf(rep: Report, text_all: list[str], elec_limit_us: int = 2000) -> None:
+    """PERF-002/003/004/006 from the PERF, STACK and DIAG bus lines."""
+    perf = [m for m in (PERF_RE.search(s) for s in text_all) if m]
+    if not rep.check(bool(perf), "PERF", f"{len(perf)} PERF line(s) (printed every 60 s)"):
+        return
+    first, last = perf[0], perf[-1]
+    start = [m for m in (PERF_START_RE.search(s) for s in text_all) if m]
+    ref = int(start[0].group(1)) if start else int(first.group(1))
+    drift = ref - int(last.group(1))
+    rep.check(abs(drift) < 1024 and abs(int(first.group(1)) - int(last.group(1))) < 1024, "PERF-002",
+              f"free heap at start {ref} B, first PERF {first.group(1)} B, last {last.group(1)} B "
+              f"(change {drift:+d} B, limit 1024 B); minimum ever {last.group(2)} B")
+    stacks: dict[str, int] = {}
+    for m in (STACK_ANY_RE.search(s) for s in text_all):
+        if m:
+            stacks[m.group(1)] = min(stacks.get(m.group(1), 1 << 30), int(m.group(4)))
+    need = {"ems_acquisition", "ems_scheduler", "modbus_master", "rs485_transport", "main"}
+    missing = sorted(need - set(stacks))
+    low = {k: v for k, v in stacks.items() if v < 1024}
+    rep.check(not missing and not low, "PERF-003",
+              "minimum free stack: " + ", ".join(f"{k} {v} B" for k, v in sorted(stacks.items()))
+              + (f"; missing: {missing}" if missing else "") + (f"; below 1024 B: {low}" if low else ""))
+    out_hwm, back_hwm = int(last.group(6)), int(last.group(7))
+    bp = [int(m.group(1)) for m in (BACKPRESSURE_RE.search(s) for s in text_all) if m]
+    rep.check(out_hwm <= 4 and back_hwm <= 4 and (not bp or bp[-1] == 0), "PERF-004",
+              f"request queue + active high-water {out_hwm}, completion queue high-water {back_hwm} (<= 4); "
+              f"backpressure rejections {bp[-1] if bp else 'n/a'}")
+    rep.check(int(last.group(4)) <= elec_limit_us, "PERF-006",
+              f"acquisition processing, electrical group: max {last.group(4)} us, last {last.group(3)} us "
+              f"(<= {elec_limit_us} us); any result max {last.group(5)} us")
+
+
+def analyse_two_dev(lines: list[tuple[float, str]], phases: list[Phase], expected_crc: str | None = None,
+                    sim_lines: list[str] | None = None) -> Report:
+    """D9: DEV-003, RTE-005, SCH-003 with site lab_bench_2dev (slot 0 = slave 1, slot 1 = slave 2)."""
+    rep = Report()
+    dumps = parse_console(lines)
+    text_all = [ANSI_RE.sub("", s) for _, s in lines]
+    rx = parse_sim_rx(sim_lines or [])
+    _boot(rep, text_all, "sim", expected_crc)
+    rep.info(f"{len(dumps)} value dumps, {len(rx)} simulator requests captured")
+    normal = sim_mod.NORMAL_VALUES
+
+    ph = _phase(phases, "normal")
+    for slot in (0, 1):
+        ds = dumps_in(dumps, ph, 15, slot) if ph else []
+        if rep.check(bool(ds), "RTE-005", f"slot {slot}: {len(ds)} dump(s) in phase 'normal'"):
+            d = ds[-1]
+            bad = [k for k, v in d.vals.items() if v.q != "GOOD" or not _close(v.value, normal.get(k, v.value))]
+            rep.check(d.mode == "ONLINE" and len(d.vals) == 14 and not bad, "RTE-005",
+                      f"slot {slot}: mode {d.mode}, 14 parameters GOOD with the Test Spec 4.1 values"
+                      + (f"; wrong: {bad}" if bad else ""))
+
+    ph = _phase(phases, "dev1_offline")
+    if ph:
+        off = _evt_times(lines, "DEVICE_OFFLINE", ph)
+        offs = [s for t, s in lines if ph.t0 <= t <= ph.t1 and "EVT_DEVICE_OFFLINE" in s]
+        rep.check(len(off) == 1 and "slot=0" in ANSI_RE.sub("", offs[0]) and off[0] - ph.t0 <= 16.0, "DEV-003",
+                  f"{len(off)} EVT_DEVICE_OFFLINE, slot 0 only, "
+                  f"{(off[0] - ph.t0) if off else float('nan'):.1f} s after slave 1 stopped answering (<= 16 s)")
+        d0 = dumps_in(dumps, ph, 30, 0)
+        if d0:
+            nl = [k for k, v in d0[-1].vals.items() if v.q != "COMM_LOST"]
+            rep.check(d0[-1].mode == "OFFLINE" and not nl, "DEV-003", f"slot 0: mode {d0[-1].mode}, all COMM_LOST"
+                      + (f"; not: {nl}" if nl else ""))
+        d1 = dumps_in(dumps, ph, 0, 1)
+        bad1 = [(round(x.t - ph.t0, 1), k) for x in d1 for k, v in x.vals.items() if v.q != "GOOD"]
+        rep.check(bool(d1) and all(x.mode == "ONLINE" for x in d1) and not bad1, "DEV-003",
+                  f"slot 1: {len(d1)} dump(s), always ONLINE and all GOOD" + (f"; not GOOD: {bad1[:3]}" if bad1 else ""))
+        if ph.w0 is not None and rx:
+            # a retry follows its request within ~1.6 s; polls are ~5 s apart
+            starts = transactions([r[0] for r in rx if r[1] == 2 and r[2] == 0 and ph.w0 <= r[0] <= (ph.w1 or 0)],
+                                  gap=2.0)
+            gaps = [b - a for a, b in zip(starts, starts[1:])]
+            rep.check(len(gaps) >= 10 and all(5.0 - 3.2 <= g <= 5.0 + 3.2 for g in gaps), "DEV-003",
+                      f"slave 2 electrical poll interval {min(gaps) if gaps else float('nan'):.2f}..."
+                      f"{max(gaps) if gaps else float('nan'):.2f} s over {len(gaps)} interval(s) (5 s +- 3.2 s)")
+
+    ph = _phase(phases, "recover")
+    if ph:
+        on = _evt_times(lines, "DEVICE_ONLINE", ph)
+        rep.check(len(on) == 1 and on[0] - ph.t0 <= 33.0, "DEV-002",
+                  f"{len(on)} EVT_DEVICE_ONLINE, {(on[0] - ph.t0) if on else float('nan'):.1f} s after slave 1 "
+                  "answers again (<= one probe interval)")
+    ph = _phase(phases, "final")
+    for slot in (0, 1):
+        ds = dumps_in(dumps, ph, 0, slot) if ph else []
+        if rep.check(bool(ds), "RTE-005", f"slot {slot}: {len(ds)} dump(s) in phase 'final'"):
+            d = ds[-1]
+            bad = [k for k, v in d.vals.items() if v.q != "GOOD"]
+            rep.check(d.mode == "ONLINE" and not bad, "RTE-005", f"end: slot {slot} mode {d.mode}, all GOOD"
+                      + (f"; not GOOD: {bad}" if bad else ""))
+    _no_overlap(rep, sim_lines or [], "SCH-003")
+    _whole_run(rep, text_all)
+    return rep
+
+
+# Test Spec 4.3 with CT 200, PT 1 (secondary values from RATIO_SETS; others NORMAL)
+RATIO_EXPECT = {
+    "ac.current.l1": (500.0, "GOOD"),
+    "ac.current.l2": (1200.0, "OUT_OF_RANGE"),
+    "ac.voltage.l1_n": (230.0, "GOOD"),
+    "ac.power.active.total": (200.0, "GOOD"),
+    "ac.energy.import.active": (20050.0, "GOOD"),     # 100.25 kWh x CT, not x CT^2
+    "ac.frequency": (50.0, "GOOD"),
+}
+
+
+def analyse_ratio(lines: list[tuple[float, str]], phases: list[Phase], expected_crc: str | None = None,
+                  sim_lines: list[str] | None = None) -> Report:
+    """D9: CONV-004..006 on the board (site lab_ratio_ct200)."""
+    rep = Report()
+    dumps = parse_console(lines)
+    text_all = [ANSI_RE.sub("", s) for _, s in lines]
+    _boot(rep, text_all, "sim", expected_crc)
+    d = _last(rep, dumps, _phase(phases, "vectors"), 15, "CONV")
+    if d:
+        for k, (want, q) in RATIO_EXPECT.items():
+            v = d.vals.get(k)
+            test = "CONV-005" if k == "ac.energy.import.active" else ("CONV-006" if q != "GOOD" else "CONV-004")
+            rep.check(v is not None and _close(v.value, want) and v.q == q, test,
+                      f"{k} = {v.value:g} {v.unit} {v.q} (expected {want:g} {q})" if v else f"{k} missing")
+    _whole_run(rep, text_all)
+    return rep
+
+
+def _budget(site: Path | None):
+    """Budget of the site from the profile tool (same code as 'budget')."""
+    if site is None:
+        return None
+    sys.path.insert(0, str(PROJECT_ROOT / "tools" / "profile"))
+    import myems_profile_tool as tool  # noqa: E402
+    model, _ = tool.build_model(Path(site), "sim")
+    return None if model is None else tool.budget(model)
+
+
+def analyse_load(lines: list[tuple[float, str]], phases: list[Phase], expected_crc: str | None = None,
+                 sim_lines: list[str] | None = None, site: Path | None = None) -> Report:
+    """D9 PERF-001: bus load of two meters in NORMAL against the budget; PERF-003/004/006."""
+    rep = Report()
+    dumps = parse_console(lines)
+    text_all = [ANSI_RE.sub("", s) for _, s in lines]
+    _boot(rep, text_all, "sim", expected_crc)
+    ph = _phase(phases, "load")
+    b = _budget(site or suite_site("load"))
+    if ph is None or b is None:
+        rep.check(False, "PERF-001", "load phase or budget missing")
+        _whole_run(rep, text_all)
+        return rep
+    hours = (ph.t1 - ph.t0) / 3600.0
+    rep.info(f"load phase {hours * 60:.0f} min")
+    # Per entry: submitted counter at the first and last DIAG inside the phase, latency samples in between.
+    entries: dict[int, list[tuple[float, int, int, int, int]]] = {}
+    for t, raw in lines:
+        m = DIAG_ENTRY_RE.search(ANSI_RE.sub("", raw))
+        if m and ph.t0 <= t <= ph.t1:
+            entries.setdefault(int(m.group(1)), []).append((t, int(m.group(2)), int(m.group(3)), int(m.group(4)),
+                                                            int(m.group(7))))
+    if not rep.check(len(entries) >= 2 and all(len(v) >= 2 for v in entries.values()), "PERF-001",
+                     f"{len(entries)} poll entries with >= 2 DIAG samples"):
+        _whole_run(rep, text_all)
+        return rep
+    measured = 0.0
+    rows = []
+    for e, smp in sorted(entries.items()):
+        t_a, slot, grp, sub_a, _ = smp[0]
+        t_b, _, _, sub_b, _ = smp[-1]
+        lat = [x[4] for x in smp[1:] if x[4] > 0]
+        if t_b <= t_a or not lat:
+            continue
+        rate = (sub_b - sub_a) / (t_b - t_a)
+        mean_ms = sum(lat) / len(lat)
+        measured += rate * mean_ms / 1000.0
+        rows.append(f"entry {e} (slot {slot} grp {grp}): {rate * 60:.1f}/min x {mean_ms:.0f} ms")
+    nominal = b.buses[0]["nominal_load"]
+    ratio = measured / nominal if nominal else float("nan")
+    rep.info("measured transaction time (submit -> result) per entry: " + "; ".join(rows))
+    rep.check(0.5 <= ratio <= 1.5, "PERF-001",
+              f"measured bus load {measured:.2%} vs budget nominal {nominal:.2%} (ratio {ratio:.2f}, limit 0.5..1.5; "
+              "budget assumes 50 ms device latency)")
+    _no_overlap(rep, sim_lines or [], "PERF-001")
+    rx, tx = parse_sim_rx(sim_lines or []), parse_sim_tx(sim_lines or [])
+    if ph.w0 is not None and rx:
+        rx_in = [r for r in rx if ph.w0 <= r[0] <= (ph.w1 or 0)]
+        tx_in = [x for x in tx if ph.w0 <= x[0] <= (ph.w1 or 0) + 1]
+        rep.check(len(rx_in) > 0 and abs(len(rx_in) - len(tx_in)) <= 1, "PERF-001",
+                  f"{len(rx_in)} requests, {len(tx_in)} replies in the load phase (every request answered)")
+    for slot in (0, 1):
+        ds = dumps_in(dumps, ph, 0, slot)
+        bad = sum(1 for x in ds for v in x.vals.values() if v.q != "GOOD")
+        rep.check(bool(ds) and not bad and all(x.mode == "ONLINE" for x in ds[3:]), "PERF-001",
+                  f"slot {slot}: {len(ds)} dump(s), {bad} non-GOOD value(s)")
+    _perf(rep, text_all)
+    _whole_run(rep, text_all)
+    return rep
+
+
+def _answering(ph: Phase) -> tuple[float, float] | None:
+    """Time window of a soak phase in which the simulator answers (None: never)."""
+    if ph.mode.startswith("TIMEOUT"):
+        return None
+    if ph.mode.startswith("OFFLINE_THEN_RECOVER"):
+        return (ph.t0 + OTR_SILENT_S, ph.t1)
+    return (ph.t0, ph.t1)
+
+
+def analyse_soak(lines: list[tuple[float, str]], phases: list[Phase], expected_crc: str | None = None,
+                 sim_lines: list[str] | None = None, requested_min: int | None = None) -> Report:
+    """D9 PERF-005 (+ PERF-002/003/004/006): every quality transition explained by a simulator mode change."""
+    rep = Report()
+    dumps = parse_console(lines)
+    text_all = [ANSI_RE.sub("", s) for _, s in lines]
+    _boot(rep, text_all, "sim", expected_crc)
+    run_s = sum(p.t1 - p.t0 for p in phases)
+    want_s = (requested_min or run_s / 60.0) * 60.0
+    rep.check(run_s >= want_s - 5.0, "PERF-005", f"soak ran {run_s / 3600:.2f} h of {want_s / 3600:.2f} h requested, "
+              f"{len(phases)} phase(s) of {SOAK_PHASE_S // 60} min")
+    # 1. events only where the simulator changed behaviour
+    off = [t for t, s in lines if "EVT_DEVICE_OFFLINE" in s]
+    on = [t for t, s in lines if "EVT_DEVICE_ONLINE" in s]
+    bad_off, bad_on = [], []
+    for t in off:
+        ph = next((p for p in phases if p.t0 <= t <= p.t1), None)
+        if ph is None or _answering(ph) is not None:      # only a TIMEOUT phase takes the device OFFLINE
+            bad_off.append(round(t - phases[0].t0))
+    for t in on:
+        ph = next((p for p in phases if p.t0 <= t <= p.t1), None)
+        w = _answering(ph) if ph else None
+        if w is None or not (w[0] <= t <= w[0] + 40.0):
+            bad_on.append(round(t - phases[0].t0))
+    n_timeout = sum(1 for p in phases if p.mode.startswith("TIMEOUT") and p.t1 - p.t0 >= 30)
+    n_back = sum(1 for p in phases if p.mode.startswith("OFFLINE_THEN_RECOVER") and p.t1 - p.t0 >= OTR_SILENT_S + 40)
+    rep.check(not bad_off and len(off) == n_timeout, "PERF-005",
+              f"{len(off)} EVT_DEVICE_OFFLINE (expected {n_timeout}, one per TIMEOUT phase)"
+              + (f"; unexplained at {bad_off[:5]} s" if bad_off else ""))
+    rep.check(not bad_on and len(on) == n_back, "PERF-005",
+              f"{len(on)} EVT_DEVICE_ONLINE (expected {n_back}, within 40 s after the simulator answers again)"
+              + (f"; unexplained at {bad_on[:5]} s" if bad_on else ""))
+    # 2. qualities match the simulator state in every dump
+    wrong = []
+    for ph in phases:
+        w = _answering(ph)
+        silent_end = ph.t1 if w is None else w[0]          # simulator silent from ph.t0 to here
+        for d in dumps_in(dumps, ph, 0, 0):
+            if w is not None and d.t >= w[0] + 45.0:       # answering, settled: everything GOOD
+                bad = [k for k, v in d.vals.items() if v.q != "GOOD"]
+                if bad or d.mode != "ONLINE":
+                    wrong.append(f"{ph.name}+{d.t - ph.t0:.0f}s {d.mode} {bad[:2]}")
+            elif ph.t0 + 20.0 <= d.t < silent_end:        # silent, settled: OFFLINE, nothing GOOD
+                bad = [k for k, v in d.vals.items() if v.q == "GOOD"]
+                if bad or d.mode != "OFFLINE":
+                    wrong.append(f"{ph.name}+{d.t - ph.t0:.0f}s {d.mode} GOOD:{bad[:2]}")
+    rep.check(not wrong, "PERF-005", f"qualities match the simulator mode in every dump checked"
+              + (f"; {len(wrong)} wrong, first: {wrong[:3]}" if wrong else f" ({len(dumps)} dumps)"))
+    rep.check(not any("EVT_BUS_FAULT" in s for s in text_all), "PERF-005", "no EVT_BUS_FAULT")
+    _perf(rep, text_all)
+    _whole_run(rep, text_all)
+    return rep
+
+
+ANALYSERS = {"d6": analyse_d6, "d7": analyse_d7, "esc": analyse_esc, "reject": analyse_reject,
+             "two_dev": analyse_two_dev, "ratio": analyse_ratio, "load": analyse_load, "soak": analyse_soak}
 
 
 # ================================================================ running ===
@@ -696,10 +1044,24 @@ def hard_reset(ser) -> None:
 
 
 def control_text(mode: str) -> str:
-    """Simulator control file for a phase. 'BUS:<BABBLE|QUIET>' is a bus-level fault (D8)."""
-    if mode.startswith("BUS:"):
-        return f"mode * NORMAL\nbus {mode[4:]}\n"
-    return f"bus QUIET\nmode * {mode}\n"
+    """Simulator control file for a phase. Items separated by '|':
+    'BUS:<BABBLE|QUIET>' bus-level fault (D8); 'N=MODE' mode for slave N only
+    (other slaves NORMAL); 'set ...' a meter-side value; otherwise the mode
+    for every slave."""
+    lines = ["bus QUIET", "mode * NORMAL"]
+    for item in (x.strip() for x in mode.split("|")):
+        if not item:
+            continue
+        if item.startswith("BUS:"):
+            lines.append(f"bus {item[4:]}")
+        elif item.startswith("set "):
+            lines.append(item)
+        elif re.fullmatch(r"\d+=\S+", item):
+            slave, _, m = item.partition("=")
+            lines.append(f"mode {slave} {m}")
+        else:
+            lines.append(f"mode * {item}")
+    return "\n".join(lines) + "\n"
 
 
 def write_control(path: Path, mode: str) -> None:
@@ -712,8 +1074,12 @@ def run_suite(args) -> int:
     except ImportError:
         print("pyserial missing: python -m pip install -r tools/requirements-usb-rs485.txt", file=sys.stderr)
         return 2
+    if args.site is None:
+        args.site = suite_site(args.suite)
     layout = sim_mod.load_layout(args.site)
-    suite = SUITES[args.suite]
+    suite = suite_phases(args.suite, args.duration_min)
+    print(f"Suite {args.suite}: firmware -Mode {SUITE_BUILD.get(args.suite, 'Wp4Sim')}, site {args.site.name} "
+          f"(config CRC {layout['config_crc32']})")
     out = args.out_dir or (PROJECT_ROOT / "tools" / "test_results" /
                            f"wp4_{args.suite}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}")
     out.mkdir(parents=True, exist_ok=True)
@@ -762,16 +1128,25 @@ def run_suite(args) -> int:
         time.sleep(3)
 
         total = sum(d for _, _, d in suite)
-        print(f"Suite {args.suite}: {len(suite)} phase(s), about {total // 60} min {total % 60} s")
+        print(f"Suite {args.suite}: {len(suite)} phase(s), about {total // 3600} h {total % 3600 // 60} min "
+              f"{total % 60} s")
+        interrupted = False
         for name, mode, dur in suite:
             write_control(ctl, mode)
             t0, w0 = time.monotonic(), time.time()
             print(f"  {dt.datetime.now():%H:%M:%S}  phase {name:<17} simulator {mode} for {dur} s")
-            time.sleep(dur)
+            try:
+                time.sleep(dur)
+            except KeyboardInterrupt:
+                interrupted = True    # keep what was captured; the report shows the shortfall
             phases.append(Phase(name, mode, t0, time.monotonic(), w0, time.time()))
+            if interrupted:
+                print("  interrupted: stopping the run and analysing what was captured")
+                break
         # wait for the next STATS line (every 60 s) if none has appeared yet
         deadline = time.monotonic() + 65
-        while args.suite != "reject" and time.monotonic() < deadline and not con.seen(STATS_RE):
+        while (args.suite != "reject" and not interrupted and time.monotonic() < deadline
+               and not con.seen(STATS_RE)):
             time.sleep(0.5)
     finally:
         if con is not None:
@@ -784,15 +1159,24 @@ def run_suite(args) -> int:
         except subprocess.TimeoutExpired:
             sim.kill()
 
+    requested = args.duration_min or DEFAULT_DURATION_MIN.get(args.suite)
     (out / "phases.json").write_text(json.dumps({"suite": args.suite, "crc": layout["config_crc32"],
+                                                 "site": str(args.site), "duration_min": requested,
                                                  "phases": [asdict(p) for p in phases]}, indent=2),
                                      encoding="utf-8")
     sim_lines = sim_log.read_text(encoding="utf-8", errors="replace").splitlines() if sim_log.exists() else []
-    return report(out, args.suite, con.lines if con else [], phases, layout["config_crc32"], sim_lines)
+    return report(out, args.suite, con.lines if con else [], phases, layout["config_crc32"], sim_lines,
+                  {"duration_min": requested, "site": str(args.site)})
 
 
-def report(out: Path, suite: str, lines, phases, crc, sim_lines=None) -> int:
-    rep = ANALYSERS[suite](lines, phases, crc, sim_lines)
+def report(out: Path, suite: str, lines, phases, crc, sim_lines=None, meta: dict | None = None) -> int:
+    meta = meta or {}
+    if suite == "soak":
+        rep = analyse_soak(lines, phases, crc, sim_lines, requested_min=meta.get("duration_min"))
+    elif suite == "load":
+        rep = analyse_load(lines, phases, crc, sim_lines, site=Path(meta["site"]) if meta.get("site") else None)
+    else:
+        rep = ANALYSERS[suite](lines, phases, crc, sim_lines)
     result = "PASS" if rep.failures == 0 else f"FAIL ({rep.failures})"
     if rep.blocked:
         result += f", {rep.blocked} BLOCKED"
@@ -814,7 +1198,7 @@ def load_saved(out: Path):
             lines.append((float(t), text))
         except ValueError:
             continue
-    return meta.get("suite", "d6"), lines, phases, meta.get("crc"), sim_lines
+    return meta.get("suite", "d6"), lines, phases, meta.get("crc"), sim_lines, meta
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -822,14 +1206,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--suite", choices=sorted(SUITES), default="d7")
     ap.add_argument("--console-port", default="COM11")
     ap.add_argument("--rs485-port", default="COM12")
-    ap.add_argument("--site", type=Path, default=PROJECT_ROOT / "config" / "site" / "lab_bench.site.json")
+    ap.add_argument("--site", type=Path, default=None,
+                    help="site file for the simulator (default: the suite's site, e.g. lab_bench_2dev for two_dev)")
+    ap.add_argument("--duration-min", type=int, default=None,
+                    help="length of the load (default 60) and soak (default 1440) suites in minutes")
     ap.add_argument("--out-dir", type=Path)
     ap.add_argument("--no-reset", action="store_true", help="do not reset the ESP32 via RTS (press EN instead)")
     ap.add_argument("--analyse", type=Path, metavar="RESULT_DIR", help="re-analyse a saved run, no hardware")
     a = ap.parse_args(argv)
     if a.analyse:
-        suite, lines, phases, crc, sim_lines = load_saved(a.analyse)
-        return report(a.analyse, suite, lines, phases, crc, sim_lines)
+        suite, lines, phases, crc, sim_lines, meta = load_saved(a.analyse)
+        return report(a.analyse, suite, lines, phases, crc, sim_lines, meta)
     try:
         return run_suite(a)
     except RuntimeError as exc:

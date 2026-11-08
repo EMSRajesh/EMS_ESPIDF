@@ -10,6 +10,7 @@
 #include "ems_stack_diag.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -202,6 +203,16 @@ static void myems_print_diagnostics(ems_poll_scheduler_handle_t scheduler, ems_a
                  ss.entry[e].skipped, ss.entry[e].rejected, ss.entry[e].last_latency_ms,
                  ss.entry[e].max_latency_ms);
     }
+    /* D9 resources (Test Spec PERF-002/004/006); queue high-water marks are
+     * derived from the master counters (outstanding = request queue + active,
+     * backlog = completion queue). */
+    ESP_LOGI(TAG, "PERF heap_free=%" PRIu32 " heap_min=%" PRIu32 " | acq_proc_us elec_last=%" PRIu32
+                  " elec_max=%" PRIu32 " max=%" PRIu32 " | master_outstanding_hwm=%" PRIu32
+                  " completion_backlog_hwm=%" PRIu32,
+             (uint32_t)esp_get_free_heap_size(), (uint32_t)esp_get_minimum_free_heap_size(),
+             as.proc_elec_last_us, as.proc_elec_max_us, as.proc_max_us, as.master_outstanding_hwm,
+             as.completion_backlog_hwm);
+
     modbus_master_stats_t ms;
     ems_event_stats_t es;
     ems_event_get_stats(&es);
@@ -397,13 +408,19 @@ void app_main(void)
 
     ESP_LOGI(TAG, "MyEMS DP-WP4 polling started: %u devices, %u poll entries",
              (unsigned)s_plan.device_count, (unsigned)s_plan.entry_count);
+    /* PERF-002 reference: no allocation is expected from here on. */
+    ESP_LOGI(TAG, "PERF heap_free_at_start=%" PRIu32 " heap_min_at_start=%" PRIu32,
+             (uint32_t)esp_get_free_heap_size(), (uint32_t)esp_get_minimum_free_heap_size());
 
     /* app_main does not poll. Every 60 s it prints the diagnostics
      * (Design 9.9): STATS summary, one DIAG line per device and per poll
      * entry, and the bus / queue / event counters. */
+    ems_stack_diag_t main_stack;
+    ems_stack_diag_init(&main_stack, "main", CONFIG_ESP_MAIN_TASK_STACK_SIZE);
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(60000U));
         myems_print_diagnostics(scheduler, acquisition, master);
+        ems_stack_diag_sample(&main_stack, TAG);   /* PERF-003: main task too */
     }
 #endif
 }

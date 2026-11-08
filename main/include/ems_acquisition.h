@@ -66,6 +66,12 @@ typedef struct {
     uint8_t  bus_transport;       /* ems_bus_transport_t, last read                   */
     uint32_t bus_faults;
     uint32_t bus_recoveries;
+    /* resources (D9, Test Spec PERF-004/006) */
+    uint32_t proc_elec_last_us;   /* ems_acq_core_process time, electrical group (group 0) */
+    uint32_t proc_elec_max_us;
+    uint32_t proc_max_us;         /* any result                                       */
+    uint32_t master_outstanding_hwm;  /* max accepted - completed: request queue + active */
+    uint32_t completion_backlog_hwm;  /* max completed - consumed: completion queue      */
 } ems_acquisition_stats_t;
 
 /* Initialises the state store from the configuration and starts the task. */

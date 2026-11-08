@@ -881,7 +881,20 @@ def _c_flags(flags: list[str]) -> str:
     return " | ".join(FLAG_MACROS[f] for f in flags) if flags else "0u"
 
 
-def render(model: Model) -> tuple[str, str]:
+def _out_dir_arg(out_dir: Path | None) -> str:
+    """' --out-dir <path>' for the Regenerate comment when it is not the default folder."""
+    if out_dir is None:
+        return ""
+    try:
+        if Path(out_dir).resolve() == DEFAULT_OUT_DIR.resolve():
+            return ""
+        rel = Path(out_dir).resolve().relative_to(PROJECT_ROOT.resolve())
+    except ValueError:
+        return " --out-dir <OUT_DIR>"      # outside the project: keep the output path-independent (GEN-002)
+    return f" --out-dir {rel.as_posix()}"
+
+
+def render(model: Model, out_dir: Path | None = None) -> tuple[str, str]:
     crc = config_crc32(model)
     ih = inputs_hash(model)
     head = [
@@ -892,7 +905,7 @@ def render(model: Model) -> tuple[str, str]:
         f" * Inputs:    {inputs_summary(model)}",
         f" * Inputs sha256 (first 16): {ih}",
         f" * Config CRC32: 0x{crc:08X}   Classification: {model.classification}",
-        f" * Regenerate: python tools/profile/myems_profile_tool.py generate --site config/site/{model.site_path.name} --target {model.target}",
+        f" * Regenerate: python tools/profile/myems_profile_tool.py generate --site config/site/{model.site_path.name} --target {model.target}{_out_dir_arg(out_dir)}",
         " */",
     ]
     if model.classification != "PRODUCTION":
@@ -1084,7 +1097,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # generate
-    header, source = render(model)
+    header, source = render(model, args.out_dir)
     files = ((args.out_dir / "ems_config_gen.h", header), (args.out_dir / "ems_config_gen.c", source))
     if args.check:
         stale = [str(p) for p, t in files if not p.is_file() or _normalise(p.read_text(encoding="utf-8")) != t]
