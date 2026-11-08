@@ -46,7 +46,7 @@ Two questions are answered separately:
 | E4 | dc.voltage = 1500.0 (max) | 44BB 8000 | GOOD |
 | E5 | dc.voltage = 1800.0 (`sim_out_of_range`) | 44E1 0000 | OUT_OF_RANGE |
 | E6 | dc.power = quiet NaN | 0000 7FC0 | INVALID; no value published |
-| E7 | dc.power = 3000.0 (max) | 0000 453B | GOOD |
+| E7 | dc.power = 3000.0 (max) | 8000 453B | GOOD |
 
 ## 2.3 Expected budget (`budget --site lab_mixed`)
 

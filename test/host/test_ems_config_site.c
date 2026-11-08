@@ -100,6 +100,8 @@ static const ems_cfg_device_t *dc_device(void)
     return NULL;
 }
 
+void run_dc_meter_tests(void);
+
 /* DP-WP5 UMD5-001 / UMD5-003 / DCDEC-008 (table part) / Design 6.2 */
 static void test_dc_meter_tables(void)
 {
@@ -148,5 +150,6 @@ void run_config_site_tests(void)
     RUN_TEST(test_plan_from_site_tables);
 #if defined(EMS_TEST_SITE_DC) || defined(EMS_TEST_SITE_MIXED)
     RUN_TEST(test_dc_meter_tables);
+    run_dc_meter_tests();     /* test_ems_dc_meter.c, DP-WP5 M3 */
 #endif
 }

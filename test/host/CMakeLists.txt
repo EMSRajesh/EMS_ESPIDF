@@ -182,6 +182,8 @@ foreach(site 2dev ct200 dc mixed)
         test_main_config_site.c
         test_ems_config_common.c
         test_ems_config_site.c
+        test_ems_dc_meter.c
+        "${MYEMS_ROOT}/main/ems_acq_core.c"
         "${site_dir}/ems_config_gen.c")
     target_include_directories(test_ems_config_site_${site} PRIVATE "${site_dir}")
     target_compile_definitions(test_ems_config_site_${site} PRIVATE EMS_TEST_SITE_${SITE_UPPER})

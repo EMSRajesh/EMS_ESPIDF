@@ -13,6 +13,7 @@ Pure-C DP-WP4 code is tested on the PC, without the ESP32:
 | `test_ems_d7` | `components/ems_profile` activation checks on corrupted copies of `main/generated`; `components/ems_diag` event ring | D7 | 20 |
 | `test_ems_d8` | `main/ems_bus_health.c` (bus health derived from the transport and master counters, latched fault, master health report) | D8 | 14 |
 | `test_ems_config_site_2dev`, `test_ems_config_site_ct200` | `main/generated_sites/<site>` (firmware tables of build modes Wp4Sim2Dev, Wp4Ratio): CRC, firmware validation, activation, plan | D9 | 8 each |
+| `test_ems_config_site_dc`, `test_ems_config_site_mixed` | `main/generated_sites/lab_dc_bench`, `lab_mixed` (build modes Wp5Dc, Wp5Mixed): the same table checks, the DC map layout, and the DC meter through `main/ems_acq_core.c` (Test Spec 2.1 and edge vectors, FC04 routing, counters, timeout, freshness; mixed site: AC and DC independent) | DP-WP5 M2, M3 | 16 / 17 |
 
 ## One-time setup (Windows)
 

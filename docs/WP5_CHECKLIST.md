@@ -7,8 +7,8 @@ Specifications: `docs/DP-WP5_Design_Specification_v1.0.md`, `docs/DP-WP5_Develop
 |---|---|---|
 | M0 | D9 committed (c987e4e); D9 HIL run deferred by the user | Done |
 | M1 | Framework generalisation, AC data only | Done, tag `dp-wp5-m1` (635edd4) |
-| M2 | DC meter data only | Delivered, to be committed |
-| M3 | Host decode and simulator (DC) | – |
+| M2 | DC meter data only | Done, tag `dp-wp5-m2` (12a6bc0) |
+| M3 | Host decode and simulator (DC) | Delivered, to be committed |
 | M4 | HIL, DC meter alone | – |
 | M5 | HIL, mixed AC + DC site | – |
 | M6 | Stabilisation and acceptance | – |
@@ -119,3 +119,39 @@ Optional quick look on the bench (not an exit criterion; the HIL suites come in 
 .\tools\build_firmware.ps1 -Mode Wp5Dc -Port COM11 -Flash -Monitor
 python tools/wp4/myems_ac_meter_sim.py --site config/site/lab_dc_bench.site.json --port COM12
 ```
+
+## M3 — DC meter on the host and in the simulator
+
+Test code only; no file under `main/`, `components/`, `config/` or in the
+tool/simulator sources changed.
+
+| File | Content |
+|---|---|
+| `test/host/test_ems_dc_meter.c` (new) | The DC meter through the firmware's generic acquisition core (`main/ems_acq_core.c`) with the generated DC tables: DCDEC-001 (vectors 2.1), DCDEC-002 (export sign), DCDEC-003 (edge vectors E1–E7), DCDEC-004 (no ratio), DCDEC-005 (group at 100), DCDEC-006/007 (counter delta, reset), DCDEC-008 (FC04 entries; an FC03 answer to an FC04 entry is a routing error); TIMEOUT → STALE → COMM_LOST with the last value kept; 9 s stale timeout. In the mixed site also: AC export and DC import at once, AC OFFLINE while DC stays GOOD, each device NOT_SUPPORTED for the other's parameters |
+| `test/host/CMakeLists.txt`, `test_ems_config_site.c`, `README.md` | The DC and mixed site executables also build `ems_acq_core.c` and the new test file |
+| `tools/wp4/tests/test_sim_wp5.py` | SIM5-002…SIM5-009 and DC fault modes, on the unchanged simulator |
+| `docs/DP-WP5_Test_Specification_v1.0.md` | Edge vector E7 corrected (see finding) |
+
+### Finding
+
+The edge vector E7 in Test Spec 2.2 was wrong: 3000.0 as FLOAT32 is 0x453B8000,
+so the CDAB words are `8000 453B`, not `0000 453B` (that is 2992.0). The host
+test caught it; the specification is corrected. The map and firmware were right.
+
+### Exit evidence (host, 9 Nov 2026)
+
+| Check | Result |
+|---|---|
+| `ctest` (host C) | 12/12; `test_ems_config_site_dc` 16 tests, `_mixed` 17 tests |
+| `ctest` with AddressSanitizer/UBSan (`-DEMS_HOST_SANITIZE=ON`) | 12/12 |
+| `python -m unittest discover -s tools/wp4/tests` | 174 tests OK (165 + 9 new) |
+| `python -m unittest discover -s tools/profile/tests` | 110 tests OK |
+
+### To run on the PC before committing
+
+```powershell
+python -m unittest discover -s tools/wp4/tests
+cmake -S test/host -B build_host; cmake --build build_host; ctest --test-dir build_host
+```
+
+Next: M4 (HIL, DC meter alone) needs a runner suite `dc` and the board.
