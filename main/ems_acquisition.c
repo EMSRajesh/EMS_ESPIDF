@@ -1,5 +1,5 @@
 /*
- * MyEMS acquisition task (DP-WP4 milestones D6, D7).
+ * MyEMS acquisition task (DP-WP4 milestones D6, D7, D8).
  *
  * All decisions are in the pure-C core (ems_acq_core.c, host-tested). This
  * file adds the FreeRTOS task, the state-store lock, logging/events and the
@@ -9,6 +9,7 @@
  *   VALUES slot=<n> <instance_id> mode=<ONLINE|OFFLINE|DISABLED> count=<n>
  *   VAL slot=<n> <param>=<value> <unit> q=<QUALITY> age_ms=<ms|-1> seq=<n>
  *   EVT_<NAME> slot=<n> ...
+ *   EVT_BUS_FAULT bus=<id> reason=<REASON> ...   /   EVT_BUS_OK bus=<id> ...
  */
 #include "ems_acquisition.h"
 #include "ems_event.h"
@@ -30,6 +31,9 @@ static const char *TAG = "ems_acquisition";
 
 struct ems_acquisition {
     modbus_master_handle_t master;
+    rs485_handle_t transport;
+    ems_bus_health_t bus;                                 /* task-only            */
+    bool bus_hold_sent;                                   /* scheduler has the hold */
     ems_poll_scheduler_handle_t scheduler;
     const ems_sched_plan_t *plan;
     const ems_config_build_t *config;
@@ -141,6 +145,11 @@ static void publish_stats(struct ems_acquisition *acq, uint32_t stale_changed)
     taskENTER_CRITICAL(&s_stats_mux);
     st.feedback_failures = acq->stats.feedback_failures;
     st.stale_transitions = acq->stats.stale_transitions + stale_changed;
+    st.bus_state = acq->bus.state;
+    st.bus_reason = acq->bus.reason;
+    st.bus_transport = acq->bus.last_transport;
+    st.bus_faults = acq->bus.faults;
+    st.bus_recoveries = acq->bus.recoveries;
     acq->stats = st;
     memcpy(acq->dev_stats, acq->core.dev, sizeof(acq->dev_stats));
     taskEXIT_CRITICAL(&s_stats_mux);
@@ -255,6 +264,109 @@ static void process_result(struct ems_acquisition *acq, const modbus_result_t *r
     }
 }
 
+/* ------------------------------------------------ bus health (D8, 9.7) --- */
+static const char *bus_name(const struct ems_acquisition *acq)
+{
+    return (acq->config->bus_count > 0U && acq->config->buses[0].bus_id != NULL) ? acq->config->buses[0].bus_id
+                                                                                 : "bus0";
+}
+
+static ems_bus_transport_t map_transport(rs485_recovery_state_t st)
+{
+    switch (st) {
+    case RS485_RECOVERY_IDLE:      return EMS_BUS_TR_IDLE;
+    case RS485_RECOVERY_REQUESTED:
+    case RS485_RECOVERY_ACTIVE:
+    case RS485_RECOVERY_COMPLETE:  return EMS_BUS_TR_RECOVERING;
+    case RS485_RECOVERY_FAILED:    return EMS_BUS_TR_FAILED;
+    default:                       return EMS_BUS_TR_UNKNOWN;
+    }
+}
+
+/* Keep the scheduler's hold equal to the bus state. A message refused because
+ * the queue is full is sent again on the next loop (<= 100 ms later). */
+static void sync_bus_hold(struct ems_acquisition *acq)
+{
+    const bool hold = (acq->bus.state == (uint8_t)EMS_BUS_FAULT);
+    if (hold == acq->bus_hold_sent) {
+        return;
+    }
+    if (ems_poll_scheduler_set_bus_hold(acq->scheduler, hold) == ESP_OK) {
+        acq->bus_hold_sent = hold;
+    } else {
+        taskENTER_CRITICAL(&s_stats_mux);
+        acq->stats.feedback_failures++;
+        taskEXIT_CRITICAL(&s_stats_mux);
+        ESP_LOGE(TAG, "could not send the bus %s to the scheduler (queue full); retrying",
+                 hold ? "hold" : "release");
+    }
+}
+
+/* Design 9.7 steps 4-6. */
+static void on_bus_fault(struct ems_acquisition *acq, int64_t now_us)
+{
+    const ems_bus_reason_t reason = (ems_bus_reason_t)acq->bus.reason;
+    (void)ems_event_emit(EMS_EVT_BUS_FAULT, EMS_EVENT_NO_SLOT, EMS_EVENT_NO_PARAM, (uint32_t)reason, now_us);
+    ESP_LOGE(TAG, "EVT_BUS_FAULT bus=%s reason=%s transport=%s outstanding=%" PRIu32 ": HEALTH_BUS_FAULT; "
+                  "polling held, all devices on the bus OFFLINE (fail closed)",
+             bus_name(acq), ems_bus_reason_name(reason),
+             ems_bus_transport_name((ems_bus_transport_t)acq->bus.last_transport), acq->bus.outstanding);
+    ESP_LOGE(TAG, "bus %s stays BUS_FAULT until the master reports BUS_OK; the 09_057 master cannot retry "
+                  "recovery (COM change request CR-D8-01): restart the controller to recover", bus_name(acq));
+
+    /* Hold first, so that no new request reaches the master. */
+    sync_bus_hold(acq);
+    for (uint8_t slot = 0; slot < acq->config->device_count; slot++) {
+        if (acq->config->devices[slot].bus_index != 0U) {
+            continue;   /* one master: bus 0 only */
+        }
+        if (ems_acq_core_force_offline(&acq->core, slot)) {
+            (void)ems_event_emit(EMS_EVT_DEVICE_OFFLINE, slot, EMS_EVENT_NO_PARAM,
+                                 acq->core.dev[slot].consecutive_failures, now_us);
+            ESP_LOGW(TAG, "EVT_DEVICE_OFFLINE slot=%u %s: bus fault; all parameters COMM_LOST",
+                     (unsigned)slot, device_name(acq, slot));
+        }
+    }
+}
+
+static void on_bus_ok(struct ems_acquisition *acq, int64_t now_us)
+{
+    const long long fault_ms = (now_us - acq->bus.fault_since_us) / 1000;
+    (void)ems_event_emit(EMS_EVT_BUS_OK, EMS_EVENT_NO_SLOT, EMS_EVENT_NO_PARAM, (uint32_t)fault_ms, now_us);
+    ESP_LOGI(TAG, "EVT_BUS_OK bus=%s after %lld ms in BUS_FAULT: polling resumed; OFFLINE devices are "
+                  "probed now", bus_name(acq), fault_ms);
+    sync_bus_hold(acq);
+}
+
+static void bus_check(struct ems_acquisition *acq, int64_t now_us)
+{
+    if (acq->transport == NULL) {
+        return;
+    }
+    ems_bus_inputs_t in = { .master_report = (uint8_t)EMS_BUS_REPORT_NONE };   /* no API: CR-D8-01 */
+    rs485_recovery_state_t st;
+    in.transport = (uint8_t)((rs485_recovery_get_state(acq->transport, &st) == ESP_OK) ? map_transport(st)
+                                                                                         : EMS_BUS_TR_UNKNOWN);
+    modbus_master_stats_t ms;
+    if (modbus_master_get_stats(acq->master, &ms) == ESP_OK) {
+        in.counters_valid = true;
+        in.accepted = ms.requests_accepted;
+        in.completed = ms.requests_completed;
+    }
+    switch (ems_bus_health_update(&acq->bus, &in, now_us)) {
+    case EMS_BUS_CHANGE_FAULT:
+        on_bus_fault(acq, now_us);
+        break;
+    case EMS_BUS_CHANGE_OK:
+        on_bus_ok(acq, now_us);
+        break;
+    case EMS_BUS_CHANGE_NONE:
+    default:
+        sync_bus_hold(acq);   /* retry a refused hold/release */
+        break;
+    }
+}
+
 static void dump_values(struct ems_acquisition *acq, int64_t now_us)
 {
     for (uint8_t s = 0; s < acq->config->device_count; s++) {
@@ -298,6 +410,7 @@ static void acquisition_task(void *argument)
         if (changed != 0U) {
             ESP_LOGW(TAG, "freshness: %" PRIu32 " parameter(s) GOOD -> STALE (age > stale timeout)", changed);
         }
+        bus_check(acq, now_us);
         publish_stats(acq, changed);
 
         if (acq->dump_interval_ms != 0U && now_us >= acq->next_dump_us) {
@@ -328,6 +441,7 @@ esp_err_t ems_acquisition_start(const ems_acquisition_config_t *config, ems_acqu
     struct ems_acquisition *acq = &s_acq;
     memset(acq, 0, sizeof(*acq));
     acq->master = config->master;
+    acq->transport = config->transport;
     acq->scheduler = config->scheduler;
     acq->plan = config->plan;
     acq->config = config->config;
@@ -343,6 +457,17 @@ esp_err_t ems_acquisition_start(const ems_acquisition_config_t *config, ems_acqu
         memset(acq, 0, sizeof(*acq));
         return ESP_ERR_INVALID_ARG;
     }
+
+    /* Bus health (Design 9.7): the master has stalled when it holds requests
+     * but completes none for longer than the largest scheduler guard. */
+    ems_bus_health_config_t bus_cfg = { .recovery_limit_ms = EMS_BUS_RECOVERY_LIMIT_MS, .stall_limit_ms = 0U };
+    for (uint8_t d = 0; d < config->plan->device_count; d++) {
+        const uint32_t guard_ms = (uint32_t)(config->plan->devices[d].guard_us / 1000);
+        if (config->plan->devices[d].enabled && guard_ms > bus_cfg.stall_limit_ms) {
+            bus_cfg.stall_limit_ms = guard_ms;
+        }
+    }
+    ems_bus_health_init(&acq->bus, &bus_cfg, esp_timer_get_time());
 
     acq->stopped_sem = xSemaphoreCreateBinaryStatic(&s_stopped_sem_cb);
     if (acq->stopped_sem == NULL) {
@@ -360,6 +485,13 @@ esp_err_t ems_acquisition_start(const ems_acquisition_config_t *config, ems_acqu
     *out_handle = acq;
     ESP_LOGI(TAG, "acquisition started: %u poll entries, state store %u device(s), value dump every %" PRIu32 " ms",
              (unsigned)acq->plan->entry_count, (unsigned)acq->config->device_count, acq->dump_interval_ms);
+    if (acq->transport != NULL) {
+        ESP_LOGI(TAG, "bus health: recovery limit %" PRIu32 " ms, master stall limit %" PRIu32
+                      " ms, master health report not available (CR-D8-01): BUS_FAULT is latched",
+                 acq->bus.cfg.recovery_limit_ms, acq->bus.cfg.stall_limit_ms);
+    } else {
+        ESP_LOGW(TAG, "bus health check disabled (no transport handle)");
+    }
     return ESP_OK;
 }
 

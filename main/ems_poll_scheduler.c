@@ -11,7 +11,11 @@
  *   - probe mode for OFFLINE devices;
  *   - guard expiry NO LONGER releases the slot (Design 9.5): it is counted,
  *     logged once and raises HEALTH_SCHED_FEEDBACK; only matching feedback
- *     releases the slot.
+ *     releases the slot;
+ *   - bus hold on BUS_FAULT (Design 9.7, D8): no submissions, probe mode,
+ *     requests still in the master cancelled so that their CANCELLED results
+ *     release the slots (the scheduler is the only submitter, so submissions
+ *     are quiesced as modbus_master_cancel_pending requires).
  */
 #include "ems_poll_scheduler.h"
 #include "ems_event.h"
@@ -31,10 +35,12 @@ static const char *TAG = "ems_scheduler";
 #define SCHEDULER_STATIC_QUEUE_LEN        16U
 #define SCHEDULER_TASK_STACK_SIZE_BYTES   4096U
 #define SCHEDULER_TASK_STACK_WORDS        (SCHEDULER_TASK_STACK_SIZE_BYTES / sizeof(StackType_t))
+#define SCHEDULER_CANCEL_TIMEOUT_MS       1000U
 
 typedef enum {
     MSG_COMPLETION = 1,
-    MSG_DEVICE_MODE = 2
+    MSG_DEVICE_MODE = 2,
+    MSG_BUS_HOLD = 3            /* mode: 1 = hold (BUS_FAULT), 0 = release (BUS_OK) */
 } sched_msg_type_t;
 
 typedef struct {
@@ -55,6 +61,8 @@ struct ems_poll_scheduler {
     uint32_t task_stack_size;
     volatile uint32_t queue_full;
     uint32_t queue_hwm;
+    uint32_t bus_cancelled;
+    uint32_t bus_cancel_errors;
     volatile bool stopping;
 };
 
@@ -67,6 +75,38 @@ static StaticTask_t s_task_tcb;
 static StackType_t s_task_stack[SCHEDULER_TASK_STACK_WORDS];
 static bool s_in_use;
 static portMUX_TYPE s_stats_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void handle_bus_hold(struct ems_poll_scheduler *s, bool hold, int64_t now_us)
+{
+    const bool was = s->core.bus_hold;
+    const uint32_t busy = ems_sched_set_bus_hold(&s->core, hold, now_us);
+    if (hold == was) {
+        return;
+    }
+    if (!hold) {
+        ESP_LOGI(TAG, "BUS_RELEASE: polling resumed; OFFLINE devices are probed now");
+        return;
+    }
+    ESP_LOGW(TAG, "BUS_HOLD: polling stopped, every device in probe mode; %u request(s) in flight",
+             (unsigned)ems_sched_in_flight(&s->core));
+    if (busy == 0U) {
+        return;
+    }
+    /* Nothing is submitted any more (hold set above, this task is the only
+     * submitter), so the master's queue is quiesced as the API requires. */
+    uint32_t cancelled = 0U;
+    const esp_err_t err = modbus_master_cancel_pending(s->master, pdMS_TO_TICKS(SCHEDULER_CANCEL_TIMEOUT_MS),
+                                                       &cancelled);
+    if (err == ESP_OK) {
+        s->bus_cancelled += cancelled;
+        ESP_LOGW(TAG, "BUS_HOLD: cancelled %" PRIu32 " request(s) in the master; their CANCELLED "
+                      "results release the slots", cancelled);
+    } else {
+        s->bus_cancel_errors++;
+        ESP_LOGE(TAG, "BUS_HOLD: modbus_master_cancel_pending failed (%s); in-flight slots stay "
+                      "until feedback (guard rule)", esp_err_to_name(err));
+    }
+}
 
 static void handle_msg(struct ems_poll_scheduler *s, const sched_msg_t *m, int64_t now_us)
 {
@@ -87,6 +127,8 @@ static void handle_msg(struct ems_poll_scheduler *s, const sched_msg_t *m, int64
             ESP_LOGW(TAG, "invalid device mode change slot=%u mode=%u", (unsigned)m->slot,
                      (unsigned)m->mode);
         }
+    } else if (m->type == MSG_BUS_HOLD) {
+        handle_bus_hold(s, m->mode != 0U, now_us);
     }
 }
 
@@ -132,6 +174,10 @@ static void update_snapshot(struct ems_poll_scheduler *s)
     s->snapshot.health_flags = s->core.health_flags;
     s->snapshot.queue_full = s->queue_full;
     s->snapshot.queue_hwm = s->queue_hwm;
+    s->snapshot.bus_cancelled = s->bus_cancelled;
+    s->snapshot.bus_cancel_errors = s->bus_cancel_errors;
+    s->snapshot.in_flight = ems_sched_in_flight(&s->core);
+    s->snapshot.bus_hold = s->core.bus_hold;
     taskEXIT_CRITICAL(&s_stats_mux);
 }
 
@@ -281,6 +327,15 @@ esp_err_t ems_poll_scheduler_set_device_mode(ems_poll_scheduler_handle_t handle,
         return ESP_ERR_INVALID_ARG;
     }
     const sched_msg_t msg = { .type = MSG_DEVICE_MODE, .slot = slot, .mode = (uint8_t)mode };
+    return send_msg(handle, &msg);
+}
+
+esp_err_t ems_poll_scheduler_set_bus_hold(ems_poll_scheduler_handle_t handle, bool hold)
+{
+    if (handle == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const sched_msg_t msg = { .type = MSG_BUS_HOLD, .mode = hold ? 1U : 0U };
     return send_msg(handle, &msg);
 }
 

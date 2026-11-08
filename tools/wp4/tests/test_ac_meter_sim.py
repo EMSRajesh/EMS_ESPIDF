@@ -447,6 +447,91 @@ class SerialLoopTests(unittest.TestCase):
             self.assertEqual([], port.sent)
 
 
+class LineFakeSerial(FakeSerial):
+    """FakeSerial whose transmit buffer drains at line rate (out_waiting like pyserial)."""
+
+    def __init__(self, clock: Clock, char_s: float = 11 / 9600):
+        super().__init__(clock, char_s)
+        self.tx_free_at = 0.0          # time the last queued byte has left the line
+        self.idle_gaps: list[float] = []
+
+    @property
+    def out_waiting(self) -> int:
+        return max(0, int(round((self.tx_free_at - self.clock.t) / self.char_s)))
+
+    def write(self, data: bytes) -> int:
+        t = self.clock.t
+        if self.sent and t > self.tx_free_at:
+            self.idle_gaps.append(t - self.tx_free_at)     # line was idle before this write
+        self.tx_free_at = max(self.tx_free_at, t) + len(data) * self.char_s
+        return super().write(data)
+
+
+class BusFaultTests(unittest.TestCase):
+    """D8: BABBLE bus fault for ESC-001..005."""
+
+    def test_control_bus_commands(self):
+        s, _, lines = make()
+        s.apply_control("bus BABBLE\n")
+        self.assertTrue(s.babble)
+        self.assertTrue(any("BUS BABBLE on" in ln for ln in lines))
+        s.apply_control("bus babble\n")                      # case-insensitive, no second log
+        self.assertEqual(1, sum("BUS BABBLE on" in ln for ln in lines))
+        s.apply_control("bus QUIET\n")
+        self.assertFalse(s.babble)
+        self.assertTrue(any("BUS QUIET" in ln for ln in lines))
+        s.apply_control("bus NOISE\nbus\n")
+        self.assertEqual(2, sum("CONTROL line" in ln for ln in lines))
+        with self.assertRaises(ValueError):
+            s.set_bus("LOUD")
+
+    def test_babble_keeps_the_line_busy_without_gaps(self):
+        s, clk, _ = make()
+        s.set_bus("BABBLE")
+        port = LineFakeSerial(clk)
+        t0 = clk.t
+        run_serve(s, port, until=t0 + 3.0)
+        self.assertEqual([], port.idle_gaps)                  # never idle: recovery sees no silence
+        self.assertTrue(port.sent and port.sent[0][0] - t0 < 0.002)
+        self.assertTrue(all(set(d) == {sim_mod.BABBLE_BYTE} for _, d in port.sent))
+        sent_bytes = sum(len(d) for _, d in port.sent)
+        line_bytes = 3.0 / port.char_s
+        self.assertGreaterEqual(sent_bytes, line_bytes)       # at least line rate
+        self.assertLess(sent_bytes, line_bytes + sim_mod.BABBLE_LOW_WATER + 2 * sim_mod.BABBLE_CHUNK)
+        self.assertEqual(sent_bytes, s.counters["babble_bytes"])
+
+    def test_babble_ignores_requests_then_quiet_answers_again(self):
+        s, clk, _ = make()
+        s.set_bus("BABBLE")
+        port = LineFakeSerial(clk)
+        port.feed(read_req(1, 18, 1), at=clk.t + 0.05)
+        run_serve(s, port, until=clk.t + 0.5)
+        self.assertEqual(0, s.counters["rx"])
+        self.assertEqual(8, s.counters["babble_rx_dropped"])
+        s.set_bus("QUIET")
+        n = len(port.sent)
+        clk.t = port.tx_free_at + 0.01                         # backlog has drained
+        port.feed(read_req(1, 18, 1), at=clk.t + 0.05)
+        run_serve(s, port, until=clk.t + 0.5)
+        self.assertEqual(n + 1, len(port.sent))               # one reply, no more babble
+        self.assertEqual(SPEC_4_1[18:19], words(port.sent[-1][1]))
+
+    def test_babble_via_control_file_at_runtime(self):
+        s, clk, _ = make()
+        with tempfile.TemporaryDirectory() as d:
+            ctl = Path(d) / "ctl.txt"
+            ctl.write_text("bus BABBLE\n", encoding="utf-8")
+            port = LineFakeSerial(clk)
+            run_serve(s, port, until=clk.t + 0.3, control_file=ctl)
+            self.assertTrue(s.babble)
+            self.assertTrue(port.sent)
+
+    def test_babble_byte_never_starts_a_valid_response(self):
+        b = sim_mod.BABBLE_BYTE
+        self.assertTrue(b > 247 or b not in (3, 4, 0x83, 0x84))   # FC check fails on byte 2
+        self.assertFalse(valid_crc(bytes((b,)) * 8))
+
+
 # ====================================================================== CLI ===
 class CliTests(unittest.TestCase):
 

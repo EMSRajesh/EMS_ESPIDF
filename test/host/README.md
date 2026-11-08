@@ -8,9 +8,10 @@ Pure-C DP-WP4 code is tested on the PC, without the ESP32:
 | `test_ems_register_map` | `components/ems_register_map` (decode, convert, validate, counters) | D2 | 34 |
 | `test_ems_config_lab` | `components/ems_profile` + `main/generated` (site `lab_bench`): CRC, firmware validation, Test Spec 4.1/4.3 vectors | D3 | 9 |
 | `test_ems_config_decoder` | `components/ems_profile` + `test/host/generated/decoder_test`: CRC, decoder vectors D1–D11 | D3 | 6 |
-| `test_ems_sched_core` | `main/ems_sched_core.c` (poll entries, request IDs, one in-flight per device, probe mode, guard rule, latency) | D5, D7 | 23 |
-| `test_ems_acq_core` | `main/ems_acq_core.c` + `main/generated` (routing, result → quality, freshness, ratios and counters through the full path, device ONLINE/OFFLINE) | D6, D7 | 31 |
+| `test_ems_sched_core` | `main/ems_sched_core.c` (poll entries, request IDs, one in-flight per device, probe mode, guard rule, latency, bus hold) | D5, D7, D8 | 27 |
+| `test_ems_acq_core` | `main/ems_acq_core.c` + `main/generated` (routing, result → quality, freshness, ratios and counters through the full path, device ONLINE/OFFLINE, bus-fault OFFLINE) | D6, D7, D8 | 33 |
 | `test_ems_d7` | `components/ems_profile` activation checks on corrupted copies of `main/generated`; `components/ems_diag` event ring | D7 | 20 |
+| `test_ems_d8` | `main/ems_bus_health.c` (bus health derived from the transport and master counters, latched fault, master health report) | D8 | 14 |
 
 ## One-time setup (Windows)
 
@@ -31,7 +32,7 @@ cmake --build build_host
 ctest --test-dir build_host --output-on-failure
 ```
 
-Expected: `100% tests passed, 0 tests failed out of 7`. For per-test output run any of the `.\build_host\test_*.exe` files.
+Expected: `100% tests passed, 0 tests failed out of 8`. For per-test output run any of the `.\build_host\test_*.exe` files.
 
 `build_host` is ignored by Git. To start clean, delete the folder.
 

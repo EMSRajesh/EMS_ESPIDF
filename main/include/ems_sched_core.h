@@ -11,6 +11,8 @@
  *        earliest deadline first, rejected submissions, probe mode
  *   9.5  guard expiry never releases a slot
  *   9.6  worst-case transaction time T_wc
+ *   9.7  bus hold on BUS_FAULT (D8): nothing is submitted, every device is
+ *        in probe mode; on release each OFFLINE device is probed at once
  */
 #ifndef EMS_SCHED_CORE_H
 #define EMS_SCHED_CORE_H
@@ -112,6 +114,7 @@ typedef enum {
 } ems_sched_dev_mode_t;
 
 #define EMS_SCHED_HEALTH_FEEDBACK   0x01u   /* HEALTH_SCHED_FEEDBACK (Design 9.5) */
+#define EMS_SCHED_HEALTH_BUS_HOLD   0x02u   /* polling held: HEALTH_BUS_FAULT (Design 9.7) */
 
 typedef struct {
     uint32_t submitted;
@@ -141,6 +144,7 @@ typedef struct {
     uint32_t feedback_unmatched;
     uint32_t feedback_late;     /* matched after the guard had expired           */
     uint32_t mode_changes;
+    uint32_t bus_holds;         /* times polling was held for a bus fault (D8)  */
 } ems_sched_stats_t;
 
 typedef struct {
@@ -151,6 +155,7 @@ typedef struct {
     uint32_t                  seq24;            /* last used, 1..0xFFFFFF   */
     uint32_t                  submit_retry_ms;
     uint32_t                  health_flags;
+    bool                      bus_hold;         /* Design 9.7: nothing is submitted */
 } ems_sched_core_t;
 
 /* A request the caller must submit to the master now. */
@@ -197,6 +202,22 @@ ems_sched_feedback_t ems_sched_feedback(ems_sched_core_t *core, uint32_t request
  * Returns false for an invalid slot/mode or a disabled device. */
 bool ems_sched_set_device_mode(ems_sched_core_t *core, uint8_t slot, ems_sched_dev_mode_t mode,
                                int64_t now_us);
+
+/*
+ * Bus hold (Design 9.7 step 5, D8). hold = true (BUS_FAULT): nothing is
+ * submitted any more, every enabled ONLINE device goes to OFFLINE (probe
+ * mode), HEALTH_BUS_HOLD is raised. Requests already in flight keep their
+ * slots: the caller cancels them in the master, and the CANCELLED results
+ * release the slots through normal feedback (the guard rule is unchanged).
+ * Returns the bitmask of device slots with a request in flight.
+ * hold = false (BUS_OK): submissions resume and every OFFLINE device's probe
+ * is due at once; the first answer brings the device ONLINE as usual.
+ * Repeating the current hold state changes nothing (returns the in-flight mask).
+ */
+uint32_t ems_sched_set_bus_hold(ems_sched_core_t *core, bool hold, int64_t now_us);
+
+/* Number of devices with a request in flight. */
+uint8_t ems_sched_in_flight(const ems_sched_core_t *core);
 
 /*
  * Guard check (Design 9.5). For each busy device whose guard deadline has

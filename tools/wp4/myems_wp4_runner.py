@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MyEMS DP-WP4 HIL runner (suites d6, d7, reject).
+"""MyEMS DP-WP4 HIL runner (suites d6, d7, esc, reject).
 
 Runs the AC meter simulator on the RS-485 adapter, captures the ESP32 console,
 steps the simulator through a sequence of modes (control file) and checks the
@@ -8,6 +8,7 @@ values and qualities the firmware publishes (VAL dump lines) in each phase.
 Prerequisite: flash the firmware the suite expects, then close any serial
 monitor on the console port:
     suites d6, d7:  .\\tools\\build_firmware.ps1 -Mode Wp4Sim -Port COM11 -Flash
+    suite esc:      .\\tools\\build_firmware.ps1 -Mode Wp4Esc -Port COM11 -Flash
     suite reject:   .\\tools\\build_firmware.ps1 -Mode Production -Port COM11 -Flash
 
 Suites:
@@ -15,9 +16,17 @@ Suites:
           Q-002/003/005/006/007/009, ENG-008, SIM-009
   d7      device state, probing, diagnostics (~5 min): CFG-019, DEV-001/002/
           004/006, SCH-006/007, DIAG-004/005
+  esc     bus recovery escalation (~2 min, D8), on the Wp4Esc build whose
+          transport test hook makes RS-485 recovery fail: the simulator stops
+          answering, the first failed transaction takes the bus to BUS_FAULT;
+          ESC-001/002/003 and the fail-closed hold are checked. ESC-004/005
+          are reported BLOCK against COM change request CR-D8-01 (the 09_057
+          master cannot retry recovery). Flash Wp4Sim again for other suites.
   reject  production firmware must refuse the simulation configuration
           (CFG-018); flash it first with -Mode Production (~1 min)
 All suites also check: no reboot, no routing errors, stack margin.
+Result: FAIL if any check fails; BLOCK rows (requirement not testable against
+the current COM layer) are listed but do not fail the run.
 
 Run (project root):
     python tools/wp4/myems_wp4_runner.py --suite d7 --console-port COM11 --rs485-port COM12
@@ -49,6 +58,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 VALUES_RE = re.compile(r"VALUES slot=(\d+) (\S+)(?: mode=([A-Z]+))? count=(\d+)")
 VAL_RE = re.compile(r"VAL slot=(\d+) ([a-z0-9_.]+)=(\S+) (\S+) q=([A-Z_]+) age_ms=(-?\d+) seq=(\d+)")
 BOOT_RE = re.compile(r"BUILD_MODE=\S+ CONFIG_TARGET=(\w+)")
+VARIANT_RE = re.compile(r"BUILD_VARIANT=(\w+)")
 # The firmware start line; must not match the rejection line "No polling started (...)".
 POLL_START_RE = re.compile(r"MyEMS DP-WP4 polling started:")
 CRC_RE = re.compile(r"CONFIG site=(\S+) .*crc=0x([0-9A-Fa-f]{8})")
@@ -58,6 +68,15 @@ EVT_RE = re.compile(r"EVT_([A-Z_]+)")
 TIMEOUT_WARN_RE = re.compile(r"ems_acquisition: \S+ grp\d+ (TIMEOUT|CRC_ERROR|PROTOCOL_ERROR|TRANSPORT_ERROR) \(consecutive")
 DIAG_DEV_RE = re.compile(r"DIAG slot=(\d+) \S+ mode=(\w+) .* offline=(\d+) online=(\d+)")
 DIAG_BUS_RE = re.compile(r"DIAG bus .*sched_queue_hwm=(\d+).*events=(\d+) event_drops=(\d+)")
+DIAG_DEV_TR_RE = re.compile(r"DIAG slot=(\d+) \S+ mode=(\w+) .* transport=(\d+) ")
+DIAG_HEALTH_RE = re.compile(r"DIAG bus .*\| health=(\w+) reason=(\w+) transport=(\w+) bus_faults=(\d+)")
+STATS_BUS_RE = re.compile(r"STATS sched: .*health=0x([0-9A-Fa-f]+) in_flight=(\d+) bus_holds=(\d+) "
+                          r"bus_cancelled=(\d+)")
+BUS_FAULT_RE = re.compile(r"EVT_BUS_FAULT bus=(\S+) reason=(\w+) transport=(\w+)")
+MASTER_FAIL_RE = re.compile(r"RS485 bus unavailable; recovery failed: (.+)")
+BUS_HOLD_RE = re.compile(r"BUS_HOLD: polling stopped")
+BUS_CANCEL_RE = re.compile(r"BUS_HOLD: cancelled (\d+) request")
+CANCELLED_RE = re.compile(r"ems_acquisition: \S+ grp\d+ request=0x[0-9A-Fa-f]+ CANCELLED")
 SIM_RX_RE = re.compile(r"^(\S+)\s+[0-9.]+ RX slave=(\d+) fc=([0-9A-F]{2}) ((?:[0-9A-F]{2} )+)mode=")
 CRASH_RE = re.compile(r"Guru Meditation|abort\(\) was called|Backtrace:|Rebooting\.\.\.|STACK CRITICAL")
 RESET_RE = re.compile(r"\brst:0x[0-9a-fA-F]+")
@@ -92,13 +111,29 @@ SUITE_D7 = [
     ("final", "NORMAL", 15),
 ]
 
+# D8: bus recovery escalation, Wp4Esc build (RS-485 recovery forced to fail by
+# the transport test hook). The simulator stops answering; the first failed
+# transaction's recovery fails -> BUS_FAULT within ~8 s (next poll <= 5 s +
+# 0.5 s timeout + 2 s recovery timeout); then polling stays held (fail closed)
+# although the simulator answers again.
+# (A babbling simulator, "BUS:BABBLE", does NOT make recovery fail with the
+# 09_057 transport: it only sees RX activity per 120-byte UART FIFO event, see
+# docs/D8_ESCALATION_REVIEW.md, CR-D8-01 (e).)
+SUITE_ESC = [
+    ("normal", "NORMAL", 25),
+    ("fault", "TIMEOUT", 15),
+    ("fail_closed", "NORMAL", 75),
+]
+ESC_VARIANT = "WP4_ESC_TEST"
+
 # Production firmware with the simulation configuration: must refuse to poll.
 SUITE_REJECT = [
     ("observe", "NORMAL", 25),
 ]
 
-SUITES = {"d6": SUITE_D6, "d7": SUITE_D7, "reject": SUITE_REJECT}
-BOOT_TARGET = {"d6": "sim", "d7": "sim", "reject": "prod"}
+SUITES = {"d6": SUITE_D6, "d7": SUITE_D7, "esc": SUITE_ESC, "reject": SUITE_REJECT}
+BOOT_TARGET = {"d6": "sim", "d7": "sim", "esc": "sim", "reject": "prod"}
+CR_D8 = "COM change request CR-D8-01 (docs/D8_ESCALATION_REVIEW.md)"
 
 
 # ================================================================ parsing ===
@@ -164,12 +199,18 @@ def lines_in(lines: list[tuple[float, str]], ph: Phase) -> list[str]:
 class Report:
     rows: list[str] = field(default_factory=list)
     failures: int = 0
+    blocked: int = 0
 
     def check(self, ok: bool, test: str, text: str) -> bool:
         self.rows.append(f"{'PASS' if ok else 'FAIL'}  {test:<10} {text}")
         if not ok:
             self.failures += 1
         return ok
+
+    def block(self, test: str, text: str) -> None:
+        """Requirement that cannot be tested against the current COM layer (recorded, not failed)."""
+        self.rows.append(f"BLOCK {test:<10} {text}")
+        self.blocked += 1
 
     def info(self, text: str) -> None:
         self.rows.append(f"            {text}")
@@ -215,11 +256,18 @@ def _whole_run(rep: Report, text_all: list[str]) -> None:
         rep.check(min(stack) >= 1024, "stack", f"ems_acquisition minimum free stack {min(stack)} B (>= 1024)")
 
 
-def _boot(rep: Report, text_all: list[str], target: str, expected_crc: str | None) -> None:
+def _boot(rep: Report, text_all: list[str], target: str, expected_crc: str | None,
+          variant: str | None = None) -> None:
     boot = [m for m in (BOOT_RE.search(s) for s in text_all) if m]
     rep.check(bool(boot) and boot[-1].group(1) == target, "boot",
               f"BUILD_MODE ... CONFIG_TARGET={boot[-1].group(1)} (expected {target})" if boot
               else "no BUILD_MODE line (was the board reset?)")
+    got = [m.group(1) for m in (VARIANT_RE.search(s) for s in text_all) if m]
+    got_v = got[-1] if got else None
+    if variant is not None or got_v is not None:
+        hint = "flash -Mode Wp4Esc" if variant == ESC_VARIANT else "flash -Mode Wp4Sim"
+        rep.check(got_v == variant, "boot", f"BUILD_VARIANT={got_v or 'none'} (expected {variant or 'none'})"
+                  + ("" if got_v == variant else f": {hint}"))
     crc = [m for m in (CRC_RE.search(s) for s in text_all) if m]
     if expected_crc is not None:
         got = crc[-1].group(2).upper() if crc else None
@@ -515,7 +563,96 @@ def analyse_reject(lines: list[tuple[float, str]], phases: list[Phase], expected
     return rep
 
 
-ANALYSERS = {"d6": analyse_d6, "d7": analyse_d7, "reject": analyse_reject}
+# ------------------------------------------------------------ esc suite ---
+def analyse_esc(lines: list[tuple[float, str]], phases: list[Phase], expected_crc: str | None = None,
+                sim_lines: list[str] | None = None) -> Report:
+    """D8, Design 9.7 / Test Spec 17 against the 09_057 master (no health API, no recovery retry)."""
+    rep = Report()
+    dumps = parse_console(lines)
+    text_all = [ANSI_RE.sub("", s) for _, s in lines]
+    rx = parse_sim_rx(sim_lines or [])
+    _boot(rep, text_all, "sim", expected_crc, ESC_VARIANT)
+    rep.check(any("EVT_CONFIG_ACTIVATED" in s for s in text_all), "CFG-019", "EVT_CONFIG_ACTIVATED")
+
+    d = _last(rep, dumps, _phase(phases, "normal"), 15, "ESC")
+    if d:
+        bad = [k for k, v in d.vals.items() if v.q != "GOOD"]
+        rep.check(d.mode == "ONLINE" and not bad, "ESC", f"before the fault: mode {d.mode}, all GOOD"
+                  + (f"; not GOOD: {bad}" if bad else ""))
+
+    fault, closed = _phase(phases, "fault"), _phase(phases, "fail_closed")
+
+    # ---- ESC-002: BUS_FAULT detected and reported
+    faults = [(t, BUS_FAULT_RE.search(ANSI_RE.sub("", s))) for t, s in lines]
+    faults = [(t, m) for t, m in faults if m]
+    t_fault = faults[0][0] if faults else None
+    if rep.check(len(faults) == 1, "ESC-002", f"{len(faults)} EVT_BUS_FAULT (expected 1)") and fault:
+        t, m = faults[0]
+        rep.check(fault.t0 <= t <= fault.t0 + 12.0, "ESC-002",
+                  f"BUS_FAULT {t - fault.t0:.1f} s after the fault phase started (<= 12 s), "
+                  f"reason={m.group(2)} transport={m.group(3)}")
+
+    # ---- ESC-001: terminal TRANSPORT_ERROR, no stuck slot
+    mfail = [m.group(1) for m in (MASTER_FAIL_RE.search(s) for s in text_all) if m]
+    rep.check(bool(mfail), "ESC-001", "master published a terminal TRANSPORT_ERROR after recovery FAILED"
+              + (f" ({mfail[0].strip()[:60]})" if mfail else ""))
+    tr = [int(m.group(3)) for m in (DIAG_DEV_TR_RE.search(s) for s in text_all) if m]
+    if tr:
+        rep.check(tr[-1] >= 1, "ESC-001", f"device transport errors {tr[-1]} (>= 1, from DIAG)")
+    rep.check(any(BUS_HOLD_RE.search(s) for s in text_all), "ESC-001", "scheduler held polling (BUS_HOLD)")
+    cancelled = sum(int(m.group(1)) for m in (BUS_CANCEL_RE.search(s) for s in text_all) if m)
+    acq_cancel = sum(1 for s in text_all if CANCELLED_RE.search(s))
+    rep.check(acq_cancel == cancelled, "ESC-001",
+              f"{cancelled} request(s) cancelled in the master, {acq_cancel} CANCELLED result(s) consumed")
+    st_after = [(t, m) for t, m in ((t, STATS_BUS_RE.search(ANSI_RE.sub("", s))) for t, s in lines)
+                if m and t_fault is not None and t > t_fault + 1.0]
+    if rep.check(bool(st_after), "ESC-001", f"{len(st_after)} STATS line(s) after the fault"):
+        m = st_after[-1][1]
+        flags = int(m.group(1), 16)
+        rep.check(m.group(2) == "0", "ESC-001", f"no stuck slot: in_flight={m.group(2)} after the fault")
+        rep.check(flags & 0x02 != 0 and m.group(3) == "1", "ESC-002",
+                  f"scheduler health=0x{flags:02X} (BUS_HOLD 0x02 raised), bus_holds={m.group(3)}")
+
+    # ---- ESC-003: devices OFFLINE, COMM_LOST, last value kept
+    off = [t for t, s in lines if "EVT_DEVICE_OFFLINE" in ANSI_RE.sub("", s)]
+    rep.check(len(off) == 1 and t_fault is not None and off[0] >= t_fault - 0.5, "ESC-003",
+              f"{len(off)} EVT_DEVICE_OFFLINE (expected 1, with the bus fault)")
+    after = [x for x in dumps if x.slot == 0 and t_fault is not None and x.t > t_fault + 0.5]
+    if rep.check(bool(after), "ESC-003", f"{len(after)} value dump(s) after the fault"):
+        x = after[-1]
+        nl = [k for k, v in x.vals.items() if v.q != "COMM_LOST"]
+        rep.check(x.mode == "OFFLINE" and not nl, "ESC-003",
+                  f"mode {x.mode}, all parameters COMM_LOST" + (f"; not: {nl}" if nl else ""))
+        p = x.vals.get(POWER)
+        rep.check(p is not None and p.value != 0.0, "Q-009",
+                  f"COMM_LOST keeps the last value ({p.value:g} kW), never 0" if p else "no power")
+
+    # ---- fail closed: the bus stays held, health reported (ESC-002 / Design 9.7 step 6)
+    if closed:
+        held = [r for r in rx if closed.w0 is not None and closed.w0 + 1.0 < r[0] < (closed.w1 or 0)]
+        if closed.w0 is not None:
+            rep.check(not held, "ESC-002", f"fail closed: {len(held)} request(s) on the bus after the fault "
+                      "(expected 0)")
+        else:
+            rep.info("phase wall times missing: bus silence not checked")
+    health = [m for m in (DIAG_HEALTH_RE.search(s) for s in text_all) if m]
+    if rep.check(bool(health), "ESC-002", "DIAG bus line with bus health"):
+        h = health[-1]
+        rep.check(h.group(1) == "BUS_FAULT" and h.group(4) == "1", "ESC-002",
+                  f"last DIAG bus: health={h.group(1)} reason={h.group(2)} transport={h.group(3)} "
+                  f"bus_faults={h.group(4)}")
+
+    # ---- ESC-004 / ESC-005: need the master side of Design 9.7 (steps 2, 3)
+    rep.block("ESC-004", f"recovery backoff 2 s / 5 s / 30 s: the master does not retry recovery; {CR_D8}")
+    oks = [s for s in text_all if "EVT_BUS_OK" in s]
+    rep.check(not oks, "ESC-005", "BUS_FAULT latched without a master health report (no EVT_BUS_OK): "
+              "fail closed as designed")
+    rep.block("ESC-005", f"EVT_BUS_OK and recovery through probing: needs bus health from the master; {CR_D8}")
+    _whole_run(rep, text_all)
+    return rep
+
+
+ANALYSERS = {"d6": analyse_d6, "d7": analyse_d7, "esc": analyse_esc, "reject": analyse_reject}
 
 
 # ================================================================ running ===
@@ -558,8 +695,15 @@ def hard_reset(ser) -> None:
     ser.dtr = ser.dtr
 
 
+def control_text(mode: str) -> str:
+    """Simulator control file for a phase. 'BUS:<BABBLE|QUIET>' is a bus-level fault (D8)."""
+    if mode.startswith("BUS:"):
+        return f"mode * NORMAL\nbus {mode[4:]}\n"
+    return f"bus QUIET\nmode * {mode}\n"
+
+
 def write_control(path: Path, mode: str) -> None:
-    path.write_text(f"mode * {mode}\n", encoding="utf-8")
+    path.write_text(control_text(mode), encoding="utf-8")
 
 
 def run_suite(args) -> int:
@@ -649,8 +793,10 @@ def run_suite(args) -> int:
 
 def report(out: Path, suite: str, lines, phases, crc, sim_lines=None) -> int:
     rep = ANALYSERS[suite](lines, phases, crc, sim_lines)
-    text = "\n".join([f"DP-WP4 HIL report, suite {suite} ({out.name})"] + rep.rows +
-                     [f"RESULT: {'PASS' if rep.failures == 0 else f'FAIL ({rep.failures})'}"])
+    result = "PASS" if rep.failures == 0 else f"FAIL ({rep.failures})"
+    if rep.blocked:
+        result += f", {rep.blocked} BLOCKED"
+    text = "\n".join([f"DP-WP4 HIL report, suite {suite} ({out.name})"] + rep.rows + [f"RESULT: {result}"])
     (out / "report.txt").write_text(text + "\n", encoding="utf-8")
     print(text)
     return 0 if rep.failures == 0 else 1

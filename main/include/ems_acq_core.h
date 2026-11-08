@@ -169,6 +169,16 @@ void ems_acq_core_process(ems_acq_core_t *core, const ems_acq_result_t *result, 
  * Returns the number of records changed. */
 uint32_t ems_acq_core_tick(ems_acq_core_t *core, int64_t now_us);
 
+/*
+ * Bus fault (Design 9.7 step 4, D8): an ONLINE device goes OFFLINE at once
+ * and every parameter becomes COMM_LOST (values and timestamps kept), as if
+ * comm_lost_threshold had been reached. Returns true if the device changed
+ * (the caller emits EVT_DEVICE_OFFLINE); false if it was already OFFLINE,
+ * is disabled or the slot is invalid. The first answer after the bus is OK
+ * brings it back ONLINE through ems_acq_core_process as usual.
+ */
+bool ems_acq_core_force_offline(ems_acq_core_t *core, uint8_t slot);
+
 /* Current device communication state (ems_acq_dev_mode_t). */
 ems_acq_dev_mode_t ems_acq_core_device_mode(const ems_acq_core_t *core, uint8_t slot);
 

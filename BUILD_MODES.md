@@ -59,6 +59,20 @@ connected to the MyEMS AC meter simulator (`tools/wp4/myems_ac_meter_sim.py`).
 .\tools\build_firmware.ps1 -Mode Wp4Sim -Port COM11 -Monitor
 ```
 
+## Build DP-WP4 escalation test firmware (D8)
+
+`sdkconfig.wp4_esc` is `sdkconfig.wp4_sim` plus `CONFIG_MYEMS_WP4_ESC_TEST=y`
+(which selects `CONFIG_MYEMS_WP24_FAULT_INJECTION`). At start-up it arms the
+transport test hook that makes the next RS-485 recovery fail, so the first
+failed transaction takes the bus to BUS_FAULT (Test Spec ESC-001..005). It is
+used only for the HIL suite `esc`; flash `Wp4Sim` again for every other suite.
+The boot log shows `BUILD_VARIANT=WP4_ESC_TEST`.
+
+```powershell
+.\tools\build_firmware.ps1 -Mode Wp4Esc -Port COM11 -Flash
+python tools/wp4/myems_wp4_runner.py --suite esc --console-port COM11 --rs485-port COM12
+```
+
 A production build refuses a simulation configuration (and the other way
 round): the boot log then shows `CONFIG REJECTED` and nothing is polled. Since
 DP-WP4 D5 this is the expected result for `-Mode Production`, because only

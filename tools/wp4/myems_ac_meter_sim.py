@@ -31,10 +31,17 @@ Examples (project root):
   python tools/wp4/myems_ac_meter_sim.py --site config/site/lab_bench.site.json --dump
   python tools/wp4/myems_ac_meter_sim.py --site config/site/lab_bench.site.json --self-test
 
+Bus fault (DP-WP4 D8, ESC-001..005): BABBLE makes the simulator transmit
+continuously (0x55 bytes, no gap), like a babbling device on the bus. The
+controller's RS-485 recovery then never sees the required bus silence and
+fails (transport recovery FAILED), without any test hook in the firmware.
+Requests are not answered while babbling. QUIET stops it.
+
 Runtime control (for runners): with --control-file PATH the simulator rereads
 the file whenever it changes. One command per line:
   mode <slave|*> <MODE>             e.g.  mode 1 EXCEPTION:02@energy
   set <slave|*> <param> <value>     meter-side engineering value, e.g. set 1 ac.current.l1 2.5
+  bus <BABBLE|QUIET>                bus-level fault (D8)
 
 Never connect this simulator to a bus with real meters or equipment.
 """
@@ -78,6 +85,10 @@ MODES_WITH_ARG = {"LOAD_CHANGE": 10.0, "EXCEPTION": 2, "SLOW": 400, "OFFLINE_THE
 MODES = {"NORMAL", "IMPORT", "EXPORT", "TIMEOUT", "BAD_LENGTH", "BAD_CRC", "OUT_OF_RANGE",
          "COUNTER_RESET"} | set(MODES_WITH_ARG)
 FAULT_MODES = {"TIMEOUT", "EXCEPTION", "BAD_LENGTH", "BAD_CRC", "SLOW", "OFFLINE_THEN_RECOVER"}
+BUS_MODES = ("QUIET", "BABBLE")
+BABBLE_BYTE = 0x55          # never a slave address 1..247 followed by FC 03/04/83/84: no valid frame
+BABBLE_CHUNK = 64           # bytes per write (about 73 ms at 9600 8E1)
+BABBLE_LOW_WATER = 128      # top up the port's transmit buffer below this many bytes
 INTEGRATING = {"IMPORT", "EXPORT", "LOAD_CHANGE", "COUNTER_RESET"}
 
 
@@ -374,7 +385,8 @@ class Simulator:
         self.devices = {d["slave_id"]: SimDevice(d, seed, self.log) for d in layout["devices"]}
         self.pending: dict[int, float] = {}          # slave -> time its delayed reply is due
         self.counters = {"rx": 0, "tx": 0, "no_response": 0, "bad_request_crc": 0,
-                         "ignored": 0, "overlap": 0}
+                         "ignored": 0, "overlap": 0, "babble_bytes": 0, "babble_rx_dropped": 0}
+        self.babble = False
 
     def log(self, text: str) -> None:
         self._log(f"{(self.clock() - self.t0) * 1000:10.1f} {text}")
@@ -383,6 +395,19 @@ class Simulator:
         now = self.clock() if now is None else now
         for d in self._targets(target):
             d.set_mode(mode, now)
+
+    def set_bus(self, mode: str) -> None:
+        mode = mode.strip().upper()
+        if mode not in BUS_MODES:
+            raise ValueError(f"unknown bus mode '{mode}'; valid: {', '.join(BUS_MODES)}")
+        babble = mode == "BABBLE"
+        if babble == self.babble:
+            return
+        self.babble = babble
+        if babble:
+            self.log("BUS BABBLE on: transmitting continuously, requests not answered")
+        else:
+            self.log(f"BUS QUIET: babble stopped after {self.counters['babble_bytes']} byte(s)")
 
     def set_value(self, target: str, param: str, value: float) -> None:
         for d in self._targets(target):
@@ -437,8 +462,11 @@ class Simulator:
                     self.set_mode(parts[1], parse_mode(parts[2]))
                 elif parts[0] == "set" and len(parts) == 4:
                     self.set_value(parts[1], parts[2], float(parts[3]))
+                elif parts[0] == "bus" and len(parts) == 2:
+                    self.set_bus(parts[1])
                 else:
-                    raise ValueError("expected 'mode <slave|*> <MODE>' or 'set <slave|*> <param> <value>'")
+                    raise ValueError("expected 'mode <slave|*> <MODE>', 'set <slave|*> <param> <value>' "
+                                     "or 'bus <BABBLE|QUIET>'")
             except ValueError as exc:
                 self.log(f"CONTROL line {n} ignored: {exc}")
 
@@ -489,6 +517,18 @@ def serve(sim: Simulator, ser, stop: Callable[[], bool] = lambda: False,
                     sim.apply_control(control_file.read_text(encoding="utf-8"))
             except FileNotFoundError:
                 pass
+        if sim.babble:
+            # Keep the transmit buffer filled so the line never goes idle.
+            if (getattr(ser, "out_waiting", 0) or 0) < BABBLE_LOW_WATER:
+                ser.write(bytes((BABBLE_BYTE,)) * BABBLE_CHUNK)
+                sim.counters["babble_bytes"] += BABBLE_CHUNK
+            queued.clear()
+            b = ser.read(1)
+            if b:
+                sim.counters["babble_rx_dropped"] += 1   # half duplex: nothing usable is received
+            buf.clear()
+            last_rx = None
+            continue
         due = [q for q in queued if q[0] <= now]
         if due:
             queued = [q for q in queued if q[0] > now]

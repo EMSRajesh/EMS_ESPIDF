@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('SelfTest', 'Production', 'Wp4Sim')]
+    [ValidateSet('SelfTest', 'Production', 'Wp4Sim', 'Wp4Esc')]
     [string]$Mode,
 
     [string]$Port = 'COM11',
@@ -14,8 +14,9 @@ $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $ProjectRoot
 
 # Wp4Sim = production firmware + CONFIG_MYEMS_CONFIG_TARGET_SIM (DP-WP4 simulation configuration)
-$configFile = switch ($Mode) { 'SelfTest' { 'sdkconfig.selftest' } 'Wp4Sim' { 'sdkconfig.wp4_sim' } default { 'sdkconfig.production' } }
-$buildDir = switch ($Mode) { 'SelfTest' { 'build_selftest' } 'Wp4Sim' { 'build_wp4_sim' } default { 'build_production' } }
+# Wp4Esc = Wp4Sim + CONFIG_MYEMS_WP4_ESC_TEST (D8: RS-485 recovery forced to fail; HIL suite esc only)
+$configFile = switch ($Mode) { 'SelfTest' { 'sdkconfig.selftest' } 'Wp4Sim' { 'sdkconfig.wp4_sim' } 'Wp4Esc' { 'sdkconfig.wp4_esc' } default { 'sdkconfig.production' } }
+$buildDir = switch ($Mode) { 'SelfTest' { 'build_selftest' } 'Wp4Sim' { 'build_wp4_sim' } 'Wp4Esc' { 'build_wp4_esc' } default { 'build_production' } }
 $configPath = Join-Path $ProjectRoot $configFile
 
 if (-not (Test-Path $configPath)) {

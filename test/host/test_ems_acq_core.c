@@ -670,6 +670,52 @@ static void test_DIAG001_002_counters_match_script(void)
     TEST_ASSERT_EQUAL_INT64(t, d->last_ok_us);                   /* DIAG-002 */
 }
 
+
+/* ESC-003 host part (D8): a bus fault takes an ONLINE device OFFLINE at once,
+ * every parameter COMM_LOST with its value and time kept; cancelled results
+ * afterwards change nothing; the first answer after BUS_OK brings it back. */
+static void test_ESC003_bus_fault_forces_offline_comm_lost(void)
+{
+    start_lab();
+    feed_all(S(1));
+    TEST_ASSERT_TRUE(ems_acq_core_force_offline(&A, 0));
+    TEST_ASSERT_EQUAL_INT(EMS_ACQ_DEV_OFFLINE, ems_acq_core_device_mode(&A, 0));
+    assert_all(0, EMS_Q_COMM_LOST);
+    ASSERT_SAME_DOUBLE(12.5, rec(0, EMS_PARAM_AC_POWER_ACTIVE_TOTAL).value);
+    TEST_ASSERT_EQUAL_INT64(S(1), rec(0, EMS_PARAM_AC_POWER_ACTIVE_TOTAL).sample_mono_us);
+    TEST_ASSERT_EQUAL_UINT32(1u, A.dev[0].offline_transitions);
+    TEST_ASSERT_FALSE(ems_acq_core_force_offline(&A, 0));        /* reported once */
+    TEST_ASSERT_EQUAL_UINT32(1u, A.dev[0].offline_transitions);
+
+    ems_acq_outcome_t o;
+    ems_acq_result_t r = status_result(0, EMS_ACQ_RES_CANCELLED, 0u);   /* cancel_pending */
+    ems_acq_core_process(&A, &r, S(2), &o);
+    TEST_ASSERT_EQUAL_INT(EMS_ACQ_OUT_CANCELLED, o.kind);
+    TEST_ASSERT_FALSE(o.device_online);
+    assert_all(0, EMS_Q_COMM_LOST);
+
+    r = ok_result(2, 9u);                                         /* probe after BUS_OK */
+    ems_acq_core_process(&A, &r, S(60), &o);
+    TEST_ASSERT_TRUE(o.device_online);
+    assert_q(0, EMS_PARAM_DEV_STATUS_CODE, EMS_Q_GOOD);
+}
+
+static void test_force_offline_rejects_disabled_and_bad_slot(void)
+{
+    copy_cfg();
+    C_dev[1] = C_dev[0];
+    C_dev[1].slot = 1u;
+    C_dev[1].slave_id = 2u;
+    C_dev[1].enabled = false;
+    C.device_count = 2u;
+    start();
+    TEST_ASSERT_FALSE(ems_acq_core_force_offline(&A, 1));         /* disabled */
+    TEST_ASSERT_EQUAL_INT(EMS_ACQ_DEV_DISABLED, ems_acq_core_device_mode(&A, 1));
+    TEST_ASSERT_FALSE(ems_acq_core_force_offline(&A, 2));         /* no such device */
+    TEST_ASSERT_FALSE(ems_acq_core_force_offline(NULL, 0));
+    TEST_ASSERT_TRUE(ems_acq_core_force_offline(&A, 0));
+}
+
 void run_acq_core_tests(void)
 {
     RUN_TEST(test_init_layout_and_Q001_initializing);
@@ -703,4 +749,6 @@ void run_acq_core_tests(void)
     RUN_TEST(test_cancelled_does_not_reset_failure_count);
     RUN_TEST(test_DEV005_disabled_device_mode);
     RUN_TEST(test_DIAG001_002_counters_match_script);
+    RUN_TEST(test_ESC003_bus_fault_forces_offline_comm_lost);
+    RUN_TEST(test_force_offline_rejects_disabled_and_bad_slot);
 }

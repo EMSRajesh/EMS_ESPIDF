@@ -171,10 +171,12 @@ static void myems_print_diagnostics(ems_poll_scheduler_handle_t scheduler, ems_a
     }
     ESP_LOGI(TAG, "STATS sched: submitted=%" PRIu32 " skipped=%" PRIu32 " rejected=%" PRIu32
                   " guard_expired=%" PRIu32 " fb_unmatched=%" PRIu32 " fb_late=%" PRIu32
-                  " health=0x%02" PRIX32 " | acq: results=%" PRIu32 " ok=%" PRIu32
-                  " failed=%" PRIu32 " routing_errors=%" PRIu32 " stale=%" PRIu32,
+                  " health=0x%02" PRIX32 " in_flight=%u bus_holds=%" PRIu32 " bus_cancelled=%" PRIu32
+                  " | acq: results=%" PRIu32 " ok=%" PRIu32
+                  " failed=%" PRIu32 " cancelled=%" PRIu32 " routing_errors=%" PRIu32 " stale=%" PRIu32,
              submitted, skipped, rejected, ss.core.guard_expired, ss.core.feedback_unmatched,
-             ss.core.feedback_late, ss.health_flags, as.results, as.ok, as.failed,
+             ss.core.feedback_late, ss.health_flags, (unsigned)ss.in_flight, ss.core.bus_holds,
+             ss.bus_cancelled, as.results, as.ok, as.failed, as.cancelled,
              as.routing_errors, as.stale_transitions);
 
     for (uint8_t d = 0; d < ems_config_build.device_count; d++) {
@@ -207,10 +209,15 @@ static void myems_print_diagnostics(ems_poll_scheduler_handle_t scheduler, ems_a
         ESP_LOGI(TAG, "DIAG bus accepted=%" PRIu32 " completed=%" PRIu32 " timeouts=%" PRIu32 " crc=%" PRIu32
                       " protocol=%" PRIu32 " transport=%" PRIu32 " completion_drops=%" PRIu32
                       " backpressure=%" PRIu32 " unexpected_slave=%" PRIu32 " | sched_queue_hwm=%" PRIu32
-                      " sched_queue_full=%" PRIu32 " | events=%" PRIu32 " event_drops=%" PRIu32,
+                      " sched_queue_full=%" PRIu32 " | events=%" PRIu32 " event_drops=%" PRIu32
+                      " | health=%s reason=%s transport=%s bus_faults=%" PRIu32 " bus_recoveries=%" PRIu32,
                  ms.requests_accepted, ms.requests_completed, ms.timeouts, ms.crc_errors, ms.protocol_errors,
                  ms.transport_errors, ms.completion_drops, ms.completion_backpressure_rejections,
-                 ms.unexpected_slave_frames, ss.queue_hwm, ss.queue_full, es.emitted, es.drops);
+                 ms.unexpected_slave_frames, ss.queue_hwm, ss.queue_full, es.emitted, es.drops,
+                 ems_bus_state_name((ems_bus_state_t)as.bus_state),
+                 ems_bus_reason_name((ems_bus_reason_t)as.bus_reason),
+                 ems_bus_transport_name((ems_bus_transport_t)as.bus_transport), as.bus_faults,
+                 as.bus_recoveries);
     }
 }
 
@@ -224,6 +231,9 @@ void app_main(void)
     static const ems_event_lock_t event_lock_cfg = { .lock = event_lock, .unlock = event_unlock, .ctx = NULL };
     ems_event_init(&event_lock_cfg);
     ESP_LOGI(TAG, "BUILD_MODE=PRODUCTION CONFIG_TARGET=%s", MYEMS_CONFIG_TARGET_NAME);
+#if CONFIG_MYEMS_WP4_ESC_TEST
+    ESP_LOGW(TAG, "BUILD_VARIANT=WP4_ESC_TEST: RS-485 recovery is forced to fail (D8 HIL suite esc only)");
+#endif
     if (!myems_config_accept(&ems_config_build)) {
         ESP_LOGE(TAG, "No polling started (device stays READY). Fix the configuration or build mode.");
         return;
@@ -274,6 +284,18 @@ void app_main(void)
         ESP_LOGE(TAG, "rs485_open failed: %s", esp_err_to_name(err));
         return;
     }
+
+#if CONFIG_MYEMS_WP4_ESC_TEST
+#if !CONFIG_MYEMS_WP24_FAULT_INJECTION
+#error "CONFIG_MYEMS_WP4_ESC_TEST needs CONFIG_MYEMS_WP24_FAULT_INJECTION (selected in Kconfig)"
+#endif
+    /* D8 escalation test build (Test Spec ESC-001 "test hook"): from now on an
+     * RS-485 recovery never sees bus silence, so it fails after
+     * recovery_timeout_ms. The master's fail-closed path, bus health, scheduler
+     * hold and device state that follow are the normal code. */
+    err = rs485_test_force_recovery_activity(transport, true);
+    ESP_LOGW(TAG, "ESC test hook armed: rs485_test_force_recovery_activity -> %s", esp_err_to_name(err));
+#endif
 
     /* 2. Start the asynchronous Modbus master. It owns request serialization,
      * RTU frame assembly, CRC validation, transaction timeouts/retries and the
@@ -354,6 +376,7 @@ void app_main(void)
      * ID back to the scheduler. */
     const ems_acquisition_config_t acquisition_config = {
         .master = master,
+        .transport = transport,             /* bus health (Design 9.7, D8) */
         .scheduler = scheduler,
         .plan = &s_plan,
         .config = &ems_config_build,

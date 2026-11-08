@@ -604,6 +604,113 @@ static void test_latency_per_entry(void)
     TEST_ASSERT_EQUAL_UINT32(60u, D.core.entry[0].stats.last_latency_ms);
 }
 
+
+/* ------------------------------------------------- bus hold (D8, 9.7) --- */
+static int subs_between(int64_t from, int64_t to)
+{
+    int k = 0;
+    for (int i = 0; i < D.n; i++) {
+        k += (D.log[i].t >= from && D.log[i].t <= to) ? 1 : 0;
+    }
+    return k;
+}
+
+/* ESC-001/003 host part: BUS_FAULT holds polling; the stuck request keeps its
+ * slot (guard rule unchanged) until its CANCELLED result is fed back. */
+static void test_ESC001_hold_stops_polling_and_keeps_stuck_slot(void)
+{
+    drv_init(2, MS(100));
+    D.reply_us[0] = -1;                              /* device 0: master never answers */
+    drv_run(S(10));
+    const uint32_t stuck = D.core.device[0].pending_id;
+    TEST_ASSERT_TRUE(stuck != 0u);
+
+    const uint32_t busy = ems_sched_set_bus_hold(&D.core, true, S(10));
+    TEST_ASSERT_EQUAL_HEX32(0x1u, busy);             /* device 1 answered: idle */
+    TEST_ASSERT_TRUE((D.core.health_flags & EMS_SCHED_HEALTH_BUS_HOLD) != 0u);
+    TEST_ASSERT_EQUAL_UINT8(EMS_SCHED_DEV_OFFLINE, D.core.device[0].mode);
+    TEST_ASSERT_EQUAL_UINT8(EMS_SCHED_DEV_OFFLINE, D.core.device[1].mode);
+    TEST_ASSERT_EQUAL_UINT32(1u, D.core.stats.bus_holds);
+
+    const int before = D.n;
+    drv_run_from(S(10), S(200));
+    TEST_ASSERT_EQUAL_INT(before, D.n);              /* nothing submitted while held */
+    TEST_ASSERT_EQUAL_UINT32(stuck, D.core.device[0].pending_id);   /* guard did not release */
+    TEST_ASSERT_EQUAL_UINT8(1u, ems_sched_in_flight(&D.core));
+
+    /* the scheduler cancels it in the master; the CANCELLED result releases the slot */
+    TEST_ASSERT_EQUAL_INT(EMS_SCHED_FB_LATE, ems_sched_feedback(&D.core, stuck, S(200)));
+    TEST_ASSERT_EQUAL_UINT8(0u, ems_sched_in_flight(&D.core));
+    TEST_ASSERT_TRUE(ems_sched_next_event_us(&D.core) == INT64_MAX);   /* held: nothing to wake for */
+}
+
+/* ESC-005 host part: on BUS_OK every OFFLINE device is probed at once, then
+ * only probed until a device answers (acquisition sets it ONLINE). */
+static void test_ESC005_release_probes_at_once(void)
+{
+    drv_init(2, MS(100));
+    drv_run(S(10));
+    (void)ems_sched_set_bus_hold(&D.core, true, S(10));
+    drv_run_from(S(10), S(100));
+    const int before = D.n;
+    TEST_ASSERT_EQUAL_HEX32(0u, ems_sched_set_bus_hold(&D.core, false, S(100)));
+    TEST_ASSERT_EQUAL_HEX32(0u, D.core.health_flags & EMS_SCHED_HEALTH_BUS_HOLD);
+    drv_run_from(S(100), S(100.5));
+    TEST_ASSERT_EQUAL_INT(before + 2, D.n);
+    TEST_ASSERT_EQUAL_UINT8(2u, D.log[before].entry);        /* device 0 probe */
+    TEST_ASSERT_EQUAL_INT64(S(100), D.log[before].t);
+    TEST_ASSERT_EQUAL_UINT8(5u, D.log[before + 1].entry);    /* device 1 probe */
+    TEST_ASSERT_EQUAL_INT64(S(100), D.log[before + 1].t);
+    /* still probe mode: next probes one probe interval later, nothing else */
+    drv_run_from(S(100.5), S(131));
+    TEST_ASSERT_EQUAL_INT(before + 4, D.n);
+    TEST_ASSERT_EQUAL_INT64(S(130), D.log[before + 2].t);
+    /* device 0 answers -> ONLINE (acquisition) -> all its groups at once */
+    TEST_ASSERT_TRUE(ems_sched_set_device_mode(&D.core, 0u, EMS_SCHED_DEV_ONLINE, S(131)));
+    drv_run_from(S(131), S(131.35));
+    TEST_ASSERT_EQUAL_INT(3, subs_between(S(131), S(131.35)));
+}
+
+/* Repeating a hold state changes nothing; disabled devices stay DISABLED;
+ * the guard flag and the hold flag are independent. */
+static void test_bus_hold_idempotent_and_flags(void)
+{
+    make_cfg(2);
+    g_dev[1].enabled = false;
+    memset(&D, 0, sizeof(D));
+    ems_sched_plan_t p;
+    TEST_ASSERT_EQUAL_INT(EMS_SCHED_PLAN_OK, ems_sched_plan_build(&g_cfg, &p));
+    ems_sched_init(&D.core, &p, 250u, 0);
+    D.core.health_flags = EMS_SCHED_HEALTH_FEEDBACK;
+    (void)ems_sched_set_bus_hold(&D.core, true, S(1));
+    (void)ems_sched_set_bus_hold(&D.core, true, S(2));
+    TEST_ASSERT_EQUAL_UINT32(1u, D.core.stats.bus_holds);
+    TEST_ASSERT_EQUAL_UINT32(1u, D.core.stats.mode_changes);
+    TEST_ASSERT_EQUAL_UINT8(EMS_SCHED_DEV_DISABLED, D.core.device[1].mode);
+    TEST_ASSERT_EQUAL_HEX32(EMS_SCHED_HEALTH_FEEDBACK | EMS_SCHED_HEALTH_BUS_HOLD, D.core.health_flags);
+    (void)ems_sched_set_bus_hold(&D.core, false, S(3));
+    (void)ems_sched_set_bus_hold(&D.core, false, S(4));
+    TEST_ASSERT_EQUAL_HEX32(EMS_SCHED_HEALTH_FEEDBACK, D.core.health_flags);
+    TEST_ASSERT_EQUAL_UINT8(EMS_SCHED_DEV_DISABLED, D.core.device[1].mode);
+    TEST_ASSERT_EQUAL_UINT32(0u, ems_sched_set_bus_hold(NULL, true, 0));
+    TEST_ASSERT_EQUAL_UINT8(0u, ems_sched_in_flight(NULL));
+}
+
+/* A device reported ONLINE while the bus is held is still not polled. */
+static void test_bus_hold_wins_over_online(void)
+{
+    drv_init(1, MS(100));
+    drv_run(S(3));
+    (void)ems_sched_set_bus_hold(&D.core, true, S(3));
+    TEST_ASSERT_TRUE(ems_sched_set_device_mode(&D.core, 0u, EMS_SCHED_DEV_ONLINE, S(4)));
+    const int before = D.n;
+    drv_run_from(S(4), S(60));
+    TEST_ASSERT_EQUAL_INT(before, D.n);
+    (void)ems_sched_set_bus_hold(&D.core, false, S(60));
+    drv_run_from(S(60), S(60.35));
+    TEST_ASSERT_EQUAL_INT(before + 3, D.n);            /* ONLINE: all groups */
+}
+
 void run_sched_core_tests(void)
 {
     RUN_TEST(test_plan_entries_and_order);
@@ -629,4 +736,8 @@ void run_sched_core_tests(void)
     RUN_TEST(test_nothing_to_do_when_all_disabled);
     RUN_TEST(test_stale_submission_report_is_ignored);
     RUN_TEST(test_latency_per_entry);
+    RUN_TEST(test_ESC001_hold_stops_polling_and_keeps_stuck_slot);
+    RUN_TEST(test_ESC005_release_probes_at_once);
+    RUN_TEST(test_bus_hold_idempotent_and_flags);
+    RUN_TEST(test_bus_hold_wins_over_online);
 }

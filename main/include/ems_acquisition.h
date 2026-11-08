@@ -16,12 +16,19 @@
  * comm_lost_threshold consecutive failed transactions a device goes OFFLINE
  * (all parameters COMM_LOST, scheduler probe mode); the first answer brings
  * it back ONLINE. Events go to the event ring (ems_event.h) and the log.
+ *
+ * DP-WP4 D8: bus health (Design 9.7, ems_bus_health.h). Every loop the task
+ * reads the transport recovery state and the master counters. On BUS_FAULT:
+ * EVT_BUS_FAULT, the scheduler holds polling and cancels what is still in the
+ * master, every device on the bus goes OFFLINE (COMM_LOST). On BUS_OK:
+ * EVT_BUS_OK, the scheduler probes; devices come back through probing.
  */
 
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
 #include "ems_acq_core.h"
+#include "ems_bus_health.h"
 #include "ems_config_types.h"
 #include "ems_poll_scheduler.h"
 #include "ems_sched_core.h"
@@ -35,6 +42,7 @@ typedef struct ems_acquisition *ems_acquisition_handle_t;
 
 typedef struct {
     modbus_master_handle_t master;
+    rs485_handle_t transport;            /* bus 0; NULL = no bus health check (D8)    */
     ems_poll_scheduler_handle_t scheduler;
     const ems_sched_plan_t *plan;        /* same plan as the scheduler (not copied)  */
     const ems_config_build_t *config;    /* generated tables                          */
@@ -52,6 +60,12 @@ typedef struct {
     uint32_t routing_errors;      /* unknown entry, slave/FC mismatch, wrong count */
     uint32_t feedback_failures;   /* scheduler queue full                           */
     uint32_t stale_transitions;   /* GOOD -> STALE by the freshness check          */
+    /* bus health (Design 9.7, D8) */
+    uint8_t  bus_state;           /* ems_bus_state_t: HEALTH_BUS_FAULT when BUS_FAULT */
+    uint8_t  bus_reason;          /* ems_bus_reason_t of the current / last fault     */
+    uint8_t  bus_transport;       /* ems_bus_transport_t, last read                   */
+    uint32_t bus_faults;
+    uint32_t bus_recoveries;
 } ems_acquisition_stats_t;
 
 /* Initialises the state store from the configuration and starts the task. */

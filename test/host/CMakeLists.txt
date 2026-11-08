@@ -158,9 +158,20 @@ target_include_directories(test_ems_d7 PRIVATE "${MYEMS_ROOT}/main/generated")
 target_link_libraries(test_ems_d7 PRIVATE ems_profile ems_diag ems_register_map ems_measurement unity)
 target_compile_options(test_ems_d7 PRIVATE ${EMS_WARNINGS})
 
-set(EMS_HOST_TARGETS ems_measurement ems_register_map ems_profile ems_sched_core ems_diag
+# Bus health (D8, Design 9.7): pure C, no dependencies.
+add_library(ems_bus_health STATIC "${MYEMS_ROOT}/main/ems_bus_health.c")
+target_include_directories(ems_bus_health PUBLIC "${MYEMS_ROOT}/main/include")
+target_compile_options(ems_bus_health PRIVATE ${EMS_WARNINGS})
+
+add_executable(test_ems_d8
+    test_main_d8.c
+    test_ems_bus_health.c)
+target_link_libraries(test_ems_d8 PRIVATE ems_bus_health unity)
+target_compile_options(test_ems_d8 PRIVATE ${EMS_WARNINGS})
+
+set(EMS_HOST_TARGETS ems_measurement ems_register_map ems_profile ems_sched_core ems_diag ems_bus_health
     test_ems_measurement test_ems_register_map test_ems_config_lab test_ems_config_decoder
-    test_ems_sched_core test_ems_acq_core test_ems_d7)
+    test_ems_sched_core test_ems_acq_core test_ems_d7 test_ems_d8)
 if(EMS_HOST_SANITIZE AND NOT MSVC)
     foreach(t ${EMS_HOST_TARGETS})
         target_compile_options(${t} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -182,3 +193,4 @@ add_test(NAME ems_config_decoder COMMAND test_ems_config_decoder)
 add_test(NAME ems_sched_core COMMAND test_ems_sched_core)
 add_test(NAME ems_acq_core COMMAND test_ems_acq_core)
 add_test(NAME ems_d7 COMMAND test_ems_d7)
+add_test(NAME ems_d8 COMMAND test_ems_d8)

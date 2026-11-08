@@ -123,6 +123,9 @@ const char *ems_sched_plan_status_name(ems_sched_plan_status_t status)
 
 static bool entry_allowed(const ems_sched_core_t *core, uint8_t e)
 {
+    if (core->bus_hold) {
+        return false;   /* Design 9.7: nothing goes to a faulted bus */
+    }
     const ems_sched_entry_t *en = &core->plan.entries[e];
     const uint8_t mode = core->device[en->slot].mode;
     if (mode == EMS_SCHED_DEV_ONLINE) {
@@ -315,6 +318,61 @@ bool ems_sched_set_device_mode(ems_sched_core_t *core, uint8_t slot, ems_sched_d
         }
     }
     return true;
+}
+
+static uint32_t in_flight_mask(const ems_sched_core_t *core)
+{
+    uint32_t mask = 0u;
+    for (uint8_t s = 0u; s < core->plan.device_count; s++) {
+        if (core->device[s].pending_id != 0u) {
+            mask |= 1u << s;
+        }
+    }
+    return mask;
+}
+
+uint8_t ems_sched_in_flight(const ems_sched_core_t *core)
+{
+    uint8_t n = 0u;
+    if (core == NULL) {
+        return 0u;
+    }
+    for (uint8_t s = 0u; s < core->plan.device_count; s++) {
+        n = (uint8_t)(n + (core->device[s].pending_id != 0u ? 1u : 0u));
+    }
+    return n;
+}
+
+uint32_t ems_sched_set_bus_hold(ems_sched_core_t *core, bool hold, int64_t now_us)
+{
+    if (core == NULL) {
+        return 0u;
+    }
+    if (core->bus_hold == hold) {
+        return in_flight_mask(core);
+    }
+    core->bus_hold = hold;
+    if (hold) {
+        core->stats.bus_holds++;
+        core->health_flags |= EMS_SCHED_HEALTH_BUS_HOLD;
+        for (uint8_t s = 0u; s < core->plan.device_count; s++) {
+            ems_sched_device_state_t *dev = &core->device[s];
+            if (core->plan.devices[s].enabled && dev->mode == (uint8_t)EMS_SCHED_DEV_ONLINE) {
+                dev->mode = (uint8_t)EMS_SCHED_DEV_OFFLINE;
+                core->stats.mode_changes++;
+            }
+        }
+    } else {
+        core->health_flags &= ~EMS_SCHED_HEALTH_BUS_HOLD;
+        for (uint8_t s = 0u; s < core->plan.device_count; s++) {
+            const ems_sched_device_plan_t *dp = &core->plan.devices[s];
+            if (dp->enabled && core->device[s].mode == (uint8_t)EMS_SCHED_DEV_OFFLINE &&
+                dp->probe_entry != EMS_SCHED_NO_ENTRY) {
+                core->entry[dp->probe_entry].next_due_us = now_us;   /* probe at once */
+            }
+        }
+    }
+    return in_flight_mask(core);
 }
 
 uint32_t ems_sched_check_guards(ems_sched_core_t *core, int64_t now_us)

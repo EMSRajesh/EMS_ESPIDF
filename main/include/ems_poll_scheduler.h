@@ -5,8 +5,9 @@
  *
  * FreeRTOS wrapper around the pure-C scheduler core (ems_sched_core.h). The
  * task is the only owner of the scheduling state. Other tasks talk to it only
- * through its message queue: completion feedback (acquisition) and device
- * mode changes ONLINE/OFFLINE (acquisition, Design 9.4).
+ * through its message queue: completion feedback (acquisition), device
+ * mode changes ONLINE/OFFLINE (acquisition, Design 9.4) and the bus hold on
+ * BUS_FAULT / release on BUS_OK (acquisition, Design 9.7, D8).
  */
 
 #include <stdbool.h>
@@ -38,6 +39,10 @@ typedef struct {
     uint8_t                 device_mode[EMS_SCHED_MAX_DEVICES];
     uint8_t                 entry_count;
     uint32_t                health_flags;     /* EMS_SCHED_HEALTH_*              */
+    uint32_t                bus_cancelled;    /* requests cancelled in the master on bus holds */
+    uint32_t                bus_cancel_errors;/* cancel_pending calls that failed            */
+    uint8_t                 in_flight;        /* devices with a request in flight            */
+    bool                    bus_hold;         /* polling held (Design 9.7)                    */
     uint32_t                queue_full;       /* messages refused: queue full    */
     uint32_t                queue_hwm;        /* most messages waiting at once   */
 } ems_poll_scheduler_stats_t;
@@ -54,6 +59,14 @@ esp_err_t ems_poll_scheduler_notify_completion(ems_poll_scheduler_handle_t handl
  * Non-blocking: ESP_ERR_TIMEOUT if the queue is full (counted). */
 esp_err_t ems_poll_scheduler_set_device_mode(ems_poll_scheduler_handle_t handle,
                                              uint8_t slot, ems_sched_dev_mode_t mode);
+
+/* Acquisition, Design 9.7 (D8). hold = true on BUS_FAULT: the scheduler stops
+ * submitting, puts every device in probe mode and cancels the requests still
+ * in the master (modbus_master_cancel_pending), whose CANCELLED results then
+ * release the slots through normal feedback. hold = false on BUS_OK: polling
+ * resumes and every OFFLINE device is probed at once.
+ * Non-blocking: ESP_ERR_TIMEOUT if the queue is full (counted). */
+esp_err_t ems_poll_scheduler_set_bus_hold(ems_poll_scheduler_handle_t handle, bool hold);
 
 /* Copy of the latest counters (updated by the task on every loop). */
 esp_err_t ems_poll_scheduler_get_stats(ems_poll_scheduler_handle_t handle,

@@ -5,6 +5,7 @@ idf_component_register(
         "ems_acq_core.c"
         "ems_poll_scheduler.c"
         "ems_acquisition.c"
+        "ems_bus_health.c"
         "modbus_self_test.c"
         "generated/ems_config_gen.c"
     INCLUDE_DIRS "." "include" "generated"

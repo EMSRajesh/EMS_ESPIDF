@@ -200,6 +200,21 @@ static void device_failed(ems_acq_core_t *core, uint8_t slot, ems_acq_outcome_t 
     }
 }
 
+bool ems_acq_core_force_offline(ems_acq_core_t *core, uint8_t slot)
+{
+    if (core == NULL || core->cfg == NULL || slot >= core->cfg->device_count) {
+        return false;
+    }
+    ems_acq_device_stats_t *ds = &core->dev[slot];
+    if (ds->mode != (uint8_t)EMS_ACQ_DEV_ONLINE) {
+        return false;
+    }
+    ds->mode = (uint8_t)EMS_ACQ_DEV_OFFLINE;
+    ds->offline_transitions++;
+    (void)ems_state_set_device_comm_lost(slot);
+    return true;
+}
+
 ems_acq_dev_mode_t ems_acq_core_device_mode(const ems_acq_core_t *core, uint8_t slot)
 {
     if (core == NULL || core->cfg == NULL || slot >= core->cfg->device_count) {
