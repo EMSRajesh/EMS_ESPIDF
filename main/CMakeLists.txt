@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "app_main.c"
         "ems_sched_core.c"
+        "ems_acq_core.c"
         "ems_poll_scheduler.c"
         "ems_acquisition.c"
         "modbus_self_test.c"

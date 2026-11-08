@@ -9,6 +9,7 @@ Pure-C DP-WP4 code is tested on the PC, without the ESP32:
 | `test_ems_config_lab` | `components/ems_profile` + `main/generated` (site `lab_bench`): CRC, firmware validation, Test Spec 4.1/4.3 vectors | D3 | 9 |
 | `test_ems_config_decoder` | `components/ems_profile` + `test/host/generated/decoder_test`: CRC, decoder vectors D1–D11 | D3 | 6 |
 | `test_ems_sched_core` | `main/ems_sched_core.c` (poll entries, request IDs, one in-flight per device, probe mode, guard rule) | D5 | 22 |
+| `test_ems_acq_core` | `main/ems_acq_core.c` + `main/generated` (routing, result → quality, freshness, ratios and counters through the full path) | D6 | 22 |
 
 ## One-time setup (Windows)
 
@@ -29,7 +30,7 @@ cmake --build build_host
 ctest --test-dir build_host --output-on-failure
 ```
 
-Expected: `100% tests passed, 0 tests failed out of 5`. For per-test output run any of the `.\build_host\test_*.exe` files.
+Expected: `100% tests passed, 0 tests failed out of 6`. For per-test output run any of the `.\build_host\test_*.exe` files.
 
 `build_host` is ignored by Git. To start clean, delete the folder.
 

@@ -1,16 +1,23 @@
 #pragma once
 
 /*
- * MyEMS acquisition task. Sole consumer of the Modbus completion queue.
+ * MyEMS acquisition task. Sole consumer of the Modbus completion queue and
+ * sole writer of the measurement state store.
  *
- * DP-WP4 D5: results are routed by request ID (entry = id >> 24, Design 9.1)
- * and checked against their poll entry; every result is fed back to the
- * scheduler. Decoding, quality and the state store are added in D6.
+ * DP-WP4 D6: every terminal result is routed by request ID, decoded with the
+ * generated mapping table and published to the state store with quality,
+ * following the Design 9.3 table (logic in ems_acq_core.c, host-tested).
+ * GOOD values older than their stale timeout become STALE (freshness check
+ * on every wake-up). Every result is fed back to the scheduler.
+ *
+ * Readers (any task) use ems_state_get() / ems_state_snapshot_device().
+ * Device ONLINE/OFFLINE handling comes in D7.
  */
 
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "ems_acq_core.h"
 #include "ems_config_types.h"
 #include "ems_poll_scheduler.h"
 #include "ems_sched_core.h"
@@ -25,11 +32,12 @@ typedef struct ems_acquisition *ems_acquisition_handle_t;
 typedef struct {
     modbus_master_handle_t master;
     ems_poll_scheduler_handle_t scheduler;
-    const ems_sched_plan_t *plan;        /* same plan as the scheduler (not copied) */
-    const ems_config_build_t *config;    /* generated tables, for names            */
-    UBaseType_t task_priority;           /* 0 = 6                                   */
-    uint32_t task_stack_size;            /* bytes, 0 = 4096                         */
-    uint32_t completion_wait_ms;         /* 0 = 100                                 */
+    const ems_sched_plan_t *plan;        /* same plan as the scheduler (not copied)  */
+    const ems_config_build_t *config;    /* generated tables                          */
+    UBaseType_t task_priority;           /* 0 = 6                                     */
+    uint32_t task_stack_size;            /* bytes, 0 = 6144                           */
+    uint32_t completion_wait_ms;         /* 0 = 100 (also the freshness check period) */
+    uint32_t value_dump_interval_ms;     /* 0 = no periodic VAL dump                  */
 } ems_acquisition_config_t;
 
 typedef struct {
@@ -37,14 +45,20 @@ typedef struct {
     uint32_t ok;
     uint32_t failed;              /* TIMEOUT, CRC, PROTOCOL, TRANSPORT, EXCEPTION */
     uint32_t cancelled;
-    uint32_t routing_errors;      /* unknown entry or slave/FC/count mismatch     */
-    uint32_t feedback_failures;   /* scheduler queue full                          */
+    uint32_t routing_errors;      /* unknown entry, slave/FC mismatch, wrong count */
+    uint32_t feedback_failures;   /* scheduler queue full                           */
+    uint32_t stale_transitions;   /* GOOD -> STALE by the freshness check          */
 } ems_acquisition_stats_t;
 
+/* Initialises the state store from the configuration and starts the task. */
 esp_err_t ems_acquisition_start(const ems_acquisition_config_t *config,
                                 ems_acquisition_handle_t *out_handle);
 
 esp_err_t ems_acquisition_get_stats(ems_acquisition_handle_t handle, ems_acquisition_stats_t *out);
+
+/* Per-device counters (Design 9.9, acquisition part). */
+esp_err_t ems_acquisition_get_device_stats(ems_acquisition_handle_t handle, uint8_t slot,
+                                           ems_acq_device_stats_t *out);
 
 /* Stop the scheduler first so no new requests are submitted, then stop acquisition. */
 esp_err_t ems_acquisition_stop(ems_acquisition_handle_t handle);

@@ -60,9 +60,11 @@ static void myems_self_test_task(void *arg)
 #if CONFIG_MYEMS_CONFIG_TARGET_SIM
 #define MYEMS_CONFIG_TARGET_NAME "sim"
 #define MYEMS_CONFIG_TARGET_VALUE EMS_TARGET_SIM
+#define MYEMS_VALUE_DUMP_MS 5000U     /* HIL runner parses the VAL lines */
 #else
 #define MYEMS_CONFIG_TARGET_NAME "prod"
 #define MYEMS_CONFIG_TARGET_VALUE EMS_TARGET_PROD
+#define MYEMS_VALUE_DUMP_MS 60000U
 #endif
 
 static ems_sched_plan_t s_plan;
@@ -247,17 +249,19 @@ void app_main(void)
         return;
     }
 
-    /* 4. Start the acquisition task: sole consumer of the completion queue;
-     * routes each result by request ID and feeds every terminal request ID
-     * back to the scheduler. */
+    /* 4. Start the acquisition task: sole consumer of the completion queue and
+     * sole writer of the state store; routes each result by request ID,
+     * decodes, publishes values with quality and feeds every terminal request
+     * ID back to the scheduler. */
     const ems_acquisition_config_t acquisition_config = {
         .master = master,
         .scheduler = scheduler,
         .plan = &s_plan,
         .config = &ems_config_build,
         .task_priority = 6U,
-        .task_stack_size = 4096U,
-        .completion_wait_ms = 100U
+        .task_stack_size = 6144U,
+        .completion_wait_ms = 100U,
+        .value_dump_interval_ms = MYEMS_VALUE_DUMP_MS
     };
 
     err = ems_acquisition_start(&acquisition_config, &acquisition);
@@ -289,10 +293,10 @@ void app_main(void)
             ESP_LOGI(TAG, "STATS sched: submitted=%" PRIu32 " skipped=%" PRIu32 " rejected=%" PRIu32
                           " guard_expired=%" PRIu32 " fb_unmatched=%" PRIu32 " fb_late=%" PRIu32
                           " health=0x%02" PRIX32 " | acq: results=%" PRIu32 " ok=%" PRIu32
-                          " failed=%" PRIu32 " routing_errors=%" PRIu32,
+                          " failed=%" PRIu32 " routing_errors=%" PRIu32 " stale=%" PRIu32,
                      submitted, skipped, rejected, ss.core.guard_expired, ss.core.feedback_unmatched,
                      ss.core.feedback_late, ss.health_flags, as.results, as.ok, as.failed,
-                     as.routing_errors);
+                     as.routing_errors, as.stale_transitions);
         }
     }
 #endif

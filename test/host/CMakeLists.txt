@@ -1,5 +1,6 @@
 # MyEMS host unit tests (DP-WP4: D1 ems_measurement, D2 ems_register_map,
-# D3 ems_profile + generated configuration tables, D5 poll scheduler core).
+# D3 ems_profile + generated configuration tables, D5 poll scheduler core,
+# D6 acquisition core).
 #
 # Builds the pure-C DP-WP4 components with the PC's compiler and runs them
 # with the Unity framework that ships inside ESP-IDF:
@@ -129,9 +130,19 @@ add_executable(test_ems_sched_core
 target_link_libraries(test_ems_sched_core PRIVATE ems_sched_core unity)
 target_compile_options(test_ems_sched_core PRIVATE ${EMS_WARNINGS})
 
+# Acquisition core (D6): runs on the generated lab_bench tables.
+add_executable(test_ems_acq_core
+    test_main_acq.c
+    test_ems_acq_core.c
+    "${MYEMS_ROOT}/main/ems_acq_core.c"
+    "${MYEMS_ROOT}/main/generated/ems_config_gen.c")
+target_include_directories(test_ems_acq_core PRIVATE "${MYEMS_ROOT}/main/generated")
+target_link_libraries(test_ems_acq_core PRIVATE ems_sched_core ems_profile ems_register_map ems_measurement unity)
+target_compile_options(test_ems_acq_core PRIVATE ${EMS_WARNINGS})
+
 set(EMS_HOST_TARGETS ems_measurement ems_register_map ems_profile ems_sched_core
     test_ems_measurement test_ems_register_map test_ems_config_lab test_ems_config_decoder
-    test_ems_sched_core)
+    test_ems_sched_core test_ems_acq_core)
 if(EMS_HOST_SANITIZE AND NOT MSVC)
     foreach(t ${EMS_HOST_TARGETS})
         target_compile_options(${t} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -151,3 +162,4 @@ add_test(NAME ems_register_map COMMAND test_ems_register_map)
 add_test(NAME ems_config_lab COMMAND test_ems_config_lab)
 add_test(NAME ems_config_decoder COMMAND test_ems_config_decoder)
 add_test(NAME ems_sched_core COMMAND test_ems_sched_core)
+add_test(NAME ems_acq_core COMMAND test_ems_acq_core)
