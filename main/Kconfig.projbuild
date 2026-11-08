@@ -20,26 +20,18 @@ config MYEMS_CONFIG_TARGET_SIM
         (DP-WP4 Design rule V-13). Simulation configurations use synthetic
         register addresses: connect only the MyEMS simulator.
 
-choice MYEMS_SIM_SITE
-    prompt "DP-WP4 simulation site (generated tables)"
+config MYEMS_SIM_SITE_DIR
+    string "Simulation site: folder of the generated tables (relative to main/)"
     depends on MYEMS_CONFIG_TARGET_SIM
-    default MYEMS_SIM_SITE_LAB_BENCH
+    default "generated"
     help
         Which generated configuration the simulation firmware is built with
-        (D9). The tables are committed; regenerate them with the command in
-        their header comment. The simulator must use the same site file (the
-        HIL runner compares the configuration CRCs).
-
-config MYEMS_SIM_SITE_LAB_BENCH
-    bool "lab_bench: one AC meter (main/generated)"
-
-config MYEMS_SIM_SITE_LAB_2DEV
-    bool "lab_bench_2dev: two AC meters (main/generated_sites/lab_bench_2dev)"
-
-config MYEMS_SIM_SITE_LAB_CT200
-    bool "lab_ratio_ct200: CT 200 (main/generated_sites/lab_ratio_ct200)"
-
-endchoice
+        (DP-WP4 D9, DP-WP5 Design Section 9). "generated" is lab_bench (one AC
+        meter); other sites live in "generated_sites/<site>". A new site needs
+        only its generated folder and an sdkconfig file that sets this value,
+        no Kconfig or CMake change. The tables are committed; regenerate them
+        with the command in their header comment. The simulator must use the
+        same site file (the HIL runner compares the configuration CRCs).
 
 config MYEMS_WP4_ESC_TEST
     bool "DP-WP4 D8 escalation test build (forces RS-485 recovery to fail)"

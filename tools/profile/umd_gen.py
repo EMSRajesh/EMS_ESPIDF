@@ -7,14 +7,21 @@ Reads config/umd/umd_v1.json and writes
   components/ems_measurement/include/ems_param_ids.h
   components/ems_measurement/src/ems_param_table.c
 
-Rules enforced (Design v1.1 Section 6.1):
+Rules enforced (DP-WP4 Design v1.1 Section 6.1, DP-WP5 Design v1.0 Section 4.5):
   * string IDs are lower-case dotted names whose first part is a known domain;
   * runtime IDs are 16-bit, unique, and their high byte equals the domain code;
   * units and value types come from the lists in the JSON file;
   * runtime IDs are permanent: if a generated header already exists, every
     parameter in it must keep its runtime ID, and a parameter may only
     disappear by being listed under "retired"; retired names and IDs are
-    never reused.
+    never reused;
+  * (dictionary 1.1) every parameter 'role' is in the 'roles' list, and every
+    capability lists only existing parameters (U-04);
+  * every dictionary under config/umd/released/ is still honoured: each of its
+    parameters keeps its runtime ID, unit and value type, or is retired (U-06).
+
+Roles and capabilities are host-side data (profile tool, simulator); they are
+not written into the C files.
 
 Output is deterministic (sorted by runtime ID, LF line endings, no time
 stamps), so it can be committed and checked with --check.
@@ -33,11 +40,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-GENERATOR_VERSION = "1.0.0"
-SCHEMA = "myems.umd/1.0"
+GENERATOR_VERSION = "1.1.0"
+SCHEMAS = ("myems.umd/1.0", "myems.umd/1.1")
+SCHEMA = SCHEMAS[-1]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_UMD = PROJECT_ROOT / "config" / "umd" / "umd_v1.json"
+DEFAULT_RELEASED_DIR = PROJECT_ROOT / "config" / "umd" / "released"
 DEFAULT_HEADER = PROJECT_ROOT / "components" / "ems_measurement" / "include" / "ems_param_ids.h"
 DEFAULT_SOURCE = PROJECT_ROOT / "components" / "ems_measurement" / "src" / "ems_param_table.c"
 
@@ -64,6 +73,8 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9]*(\.[a-z0-9_]+)+$")
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 HEX16_RE = re.compile(r"^0x[0-9A-Fa-f]{4}$")
 HEX8_RE = re.compile(r"^0x[0-9A-Fa-f]{2}$")
+ROLE_RE = re.compile(r"^[a-z]+(\.[a-z]+)*$")
+CAP_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 DEFINE_RE = re.compile(r"^#define\s+(EMS_PARAM_[A-Z0-9_]+)\s+\(\(uint16_t\)0x([0-9A-F]{4})u\)\s*$")
 
 
@@ -78,6 +89,7 @@ class Param:
     unit: str
     value_type: str
     description: str
+    role: str = ""
 
     @property
     def macro(self) -> str:
@@ -105,8 +117,24 @@ def validate(data: dict, origin: str = "umd") -> list[Param]:
     for key in ("schema", "umd_version", "domains", "units", "value_types", "parameters", "retired"):
         if key not in data:
             raise err(f"missing required field '{key}'")
-    if data["schema"] != SCHEMA:
-        raise err(f"unsupported schema '{data['schema']}', expected '{SCHEMA}'")
+    if data["schema"] not in SCHEMAS:
+        raise err(f"unsupported schema '{data['schema']}', expected one of {list(SCHEMAS)}")
+    v11 = data["schema"] != SCHEMAS[0]
+    roles: set[str] = set()
+    if v11:
+        for key in ("roles", "capabilities"):
+            if key not in data:
+                raise err(f"missing required field '{key}' (dictionary 1.1)")
+        if not isinstance(data["roles"], list) or not all(isinstance(r, str) and ROLE_RE.match(r)
+                                                          for r in data["roles"]):
+            raise err("U-04: 'roles' must be a list of lower-case dotted names")
+        if len(set(data["roles"])) != len(data["roles"]):
+            raise err("U-04: 'roles' lists a role twice")
+        roles = set(data["roles"])
+    else:
+        for key in ("roles", "capabilities"):
+            if key in data:
+                raise err(f"'{key}' needs schema '{SCHEMAS[1]}'")
     if not SEMVER_RE.match(str(data["umd_version"])):
         raise err(f"umd_version '{data['umd_version']}' is not MAJOR.MINOR.PATCH")
 
@@ -173,13 +201,60 @@ def validate(data: dict, origin: str = "umd") -> list[Param]:
             raise err(f"{where}: description must be non-empty")
         if '"' in desc or "\\" in desc or not desc.isascii():
             raise err(f"{where}: description must be ASCII without quotes or backslashes")
+        role = p.get("role", "")
+        if role and not v11:
+            raise err(f"{where}: 'role' needs schema '{SCHEMAS[1]}'")
+        if role and role not in roles:
+            raise err(f"U-04: {where}: role '{role}' is not in the 'roles' list")
         seen_names.add(name)
         seen_ids[rid] = name
-        params.append(Param(name, rid, p["unit"], p["value_type"], desc))
+        params.append(Param(name, rid, p["unit"], p["value_type"], desc, role))
 
     if not params:
         raise err("no parameters defined")
+    if v11:
+        caps = data["capabilities"]
+        if not isinstance(caps, dict):
+            raise err("U-04: 'capabilities' must be an object: capability -> list of parameter ids")
+        for cap, plist in caps.items():
+            if not CAP_RE.match(cap):
+                raise err(f"U-04: capability '{cap}': name must be lower case letters, digits and '_'")
+            if not isinstance(plist, list) or not all(isinstance(x, str) for x in plist):
+                raise err(f"U-04: capability '{cap}': value must be a list of parameter ids")
+            for x in plist:
+                if x not in seen_names:
+                    raise err(f"U-04: capability '{cap}': unknown parameter '{x}'")
     return sorted(params, key=lambda q: q.runtime_id)
+
+
+def capabilities(data: dict) -> dict[str, tuple[str, ...]]:
+    """Capability -> parameter ids (dictionary 1.1). Empty for a 1.0 dictionary."""
+    return {k: tuple(v) for k, v in data.get("capabilities", {}).items()}
+
+
+def check_released(params: list[Param], data: dict, released_dir: Path = DEFAULT_RELEASED_DIR) -> None:
+    """U-06: every released dictionary is honoured (same runtime ID, unit, value type, or retired)."""
+    if not released_dir.is_dir():
+        return
+    current = {p.name: p for p in params}
+    retired = {r["id"] for r in data["retired"]}
+    for path in sorted(released_dir.glob("*.json")):
+        try:
+            rel = json.loads(path.read_text(encoding="utf-8"))
+            rel_params = validate(rel, str(path))
+        except (json.JSONDecodeError, UmdError) as exc:
+            raise UmdError(f"U-06: released dictionary {path.name} is not valid: {exc}") from exc
+        for rp in rel_params:
+            cp = current.get(rp.name)
+            if cp is None:
+                if rp.name not in retired:
+                    raise UmdError(f"U-06: '{rp.name}' of released dictionary {rel['umd_version']} "
+                                   "disappeared. Move it to 'retired' instead of deleting it.")
+                continue
+            for attr in ("runtime_id", "unit", "value_type"):
+                if getattr(cp, attr) != getattr(rp, attr):
+                    raise UmdError(f"U-06: '{rp.name}' {attr} changed from {getattr(rp, attr)!r} "
+                                   f"(released {rel['umd_version']}) to {getattr(cp, attr)!r}")
 
 
 def read_existing_ids(header: Path) -> dict[str, int]:
@@ -276,12 +351,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--umd", type=Path, default=DEFAULT_UMD)
     ap.add_argument("--out-header", type=Path, default=DEFAULT_HEADER)
     ap.add_argument("--out-source", type=Path, default=DEFAULT_SOURCE)
+    ap.add_argument("--released-dir", type=Path, default=DEFAULT_RELEASED_DIR,
+                    help="folder of released dictionaries checked by rule U-06")
     ap.add_argument("--check", action="store_true",
                     help="do not write; exit 1 if the generated files differ from the JSON")
     args = ap.parse_args(argv)
 
     try:
         data, params = load_umd(args.umd)
+        check_released(params, data, args.released_dir)
         check_stability(params, data, read_existing_ids(args.out_header))
     except UmdError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

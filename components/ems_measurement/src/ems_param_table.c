@@ -1,8 +1,8 @@
 /*
  * GENERATED FILE - DO NOT EDIT.
  * Source:    config/umd/umd_v1.json
- * UMD:       1.0.0  (sha256 35872195dd87c1aa)
- * Generator: tools/profile/umd_gen.py 1.0.0
+ * UMD:       1.1.0  (sha256 d93035d4ea0038ca)
+ * Generator: tools/profile/umd_gen.py 1.1.0
  */
 #include "ems_measurement.h"
 #include "ems_param_ids.h"

@@ -19,7 +19,10 @@
       "type": "string"
     },
     "schema": {
-      "const": "myems.regmap/1.1"
+      "enum": [
+        "myems.regmap/1.1",
+        "myems.regmap/1.2"
+      ]
     },
     "map_id": {
       "type": "string",
@@ -181,6 +184,10 @@
           },
           "test_vector": {
             "type": "string"
+          },
+          "sim_out_of_range": {
+            "type": "number",
+            "description": "Schema 1.2. Simulation hint: value served in OUT_OF_RANGE mode; must lie outside min..max (rule V-18). Not part of the C tables."
           }
         }
       }

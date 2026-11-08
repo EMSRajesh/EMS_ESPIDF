@@ -9,9 +9,16 @@ Commands (run from the project root):
   generate   --site FILE --target sim|prod [--out-dir DIR] [--check]
   budget     --site FILE
   export-sim --site FILE [--out FILE]
+  umd-check
 
-Design reference: DP-WP4 Design Specification v1.1, Sections 5-9.
-Rule IDs V-01 .. V-15 are those of Design Section 5.4.
+Design reference: DP-WP4 Design Specification v1.1, Sections 5-9, and
+DP-WP5 Design Specification v1.0, Sections 4-5.
+Rule IDs V-01 .. V-15 are those of WP4 Design Section 5.4; V-16 .. V-18 and
+U-01 .. U-06 are those of WP5 Design Sections 5.4 and 4.5.
+
+This file must not name dictionary parameters: device-type knowledge comes
+from the dictionary (capabilities, parameter roles) and the profile and map
+files (WP5 Design principle 1, Test Spec NOC-002).
 """
 from __future__ import annotations
 
@@ -30,14 +37,17 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import umd_gen  # noqa: E402  (same folder)
 
-TOOL_VERSION = "1.0.0"
+TOOL_VERSION = "1.1.0"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_DIR = PROJECT_ROOT / "config"
 DEFAULT_OUT_DIR = PROJECT_ROOT / "main" / "generated"
 DEFAULT_SIM_DIR = PROJECT_ROOT / "build_sim"
 
 SCHEMAS = {"profile": "myems.profile", "regmap": "myems.regmap", "site": "myems.site"}
-SUPPORTED_MAJOR, SUPPORTED_MINOR = 1, 1
+# Highest supported version per file kind (major, minor); minors are additive.
+SUPPORTED = {"profile": (1, 2), "regmap": (1, 2), "site": (1, 1)}
+OLDEST_MINOR = 1
+UMD_MIN_SCHEMA = "myems.umd/1.1"     # capabilities and roles come from the dictionary
 
 # --- constants shared with the firmware ----------------------------------------
 # Limits: components/ems_profile/include/ems_config_types.h and ems_state_store.h
@@ -73,22 +83,13 @@ FLAGS = {"APPLY_CT": 0x01, "APPLY_PT": 0x02, "COUNTER": 0x04, "ROLLOVER": 0x08}
 FLAG_MACROS = {"APPLY_CT": "EMS_MAP_F_APPLY_CT", "APPLY_PT": "EMS_MAP_F_APPLY_PT",
                "COUNTER": "EMS_MAP_F_COUNTER", "ROLLOVER": "EMS_MAP_F_ROLLOVER"}
 
-# Capability -> dictionary parameters that implement it (rule V-11).
-CAPABILITIES = {
-    "phase_voltage": ("ac.voltage.l1_n", "ac.voltage.l2_n", "ac.voltage.l3_n"),
-    "phase_current": ("ac.current.l1", "ac.current.l2", "ac.current.l3"),
-    "active_power": ("ac.power.active.total",),
-    "reactive_power": ("ac.power.reactive.total",),
-    "apparent_power": ("ac.power.apparent.total",),
-    "power_factor": ("ac.power.factor.total",),
-    "frequency": ("ac.frequency",),
-    "active_energy_import": ("ac.energy.import.active",),
-    "active_energy_export": ("ac.energy.export.active",),
-    "device_status": ("dev.status.code",),
-    "power_quality": (),
-    "demand_measurement": (),
-}
-ACTIVE_POWER_PARAM = "ac.power.active.total"
+# Profile conventions (profile schema 1.2 adds NOT_APPLICABLE for pf_sign).
+POWER_SIGNS = ("IMPORT_POSITIVE",)
+PF_SIGNS = {1: ("SIGNED_BY_ACTIVE_POWER", "UNSIGNED"),
+            2: ("SIGNED_BY_ACTIVE_POWER", "UNSIGNED", "NOT_APPLICABLE")}
+# Parameter roles the tool acts on (vocabulary from the dictionary's 'roles').
+ROLE_ACTIVE_POWER = "power.active"
+ROLE_POWER_FACTOR = "power.factor"
 
 ID_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 GROUP_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -155,6 +156,8 @@ class Mapping:
     flags: list[str]
     bit_mask: int
     test_vector: str = ""
+    role: str = ""
+    sim_out_of_range: float | None = None
 
     @property
     def regs(self) -> int:
@@ -208,6 +211,7 @@ class Profile:
     ratio_handling: str
     defaults: dict
     capabilities: dict
+    pf_sign: str = ""
 
 
 @dataclass
@@ -252,6 +256,7 @@ class Model:
     maps: list[RegMap]               # in order of first use
     umd: dict
     umd_params: dict
+    capabilities: dict = field(default_factory=dict)
 
     def profile(self, pid: str) -> Profile:
         return next(p for p in self.profiles if p.profile_id == pid)
@@ -285,16 +290,23 @@ def _load_json(path: Path, rep: Report) -> dict | None:
     return data
 
 
+def schema_minor(data: dict) -> int:
+    """Minor version of an already checked 'schema' field."""
+    return int(str(data["schema"]).rsplit(".", 1)[1])
+
+
 def _check_schema(data: dict, kind: str, path: Path, rep: Report) -> bool:
     val = data.get("schema")
+    major_ok, minor_max = SUPPORTED[kind]
     m = re.match(r"^([a-z.]+)/(\d+)\.(\d+)$", str(val))
     if not m or m.group(1) != SCHEMAS[kind]:
-        rep.error("V-01", path, "schema", f"expected '{SCHEMAS[kind]}/{SUPPORTED_MAJOR}.{SUPPORTED_MINOR}', got {val!r}")
+        rep.error("V-01", path, "schema", f"expected '{SCHEMAS[kind]}/{major_ok}.{minor_max}', got {val!r}")
         return False
     major, minor = int(m.group(2)), int(m.group(3))
-    if major != SUPPORTED_MAJOR or minor > SUPPORTED_MINOR:
+    if major != major_ok or minor > minor_max:
         rep.error("V-01", path, "schema",
-                  f"unsupported schema version {major}.{minor} (this tool supports {SUPPORTED_MAJOR}.0-{SUPPORTED_MAJOR}.{SUPPORTED_MINOR})")
+                  f"unsupported {SCHEMAS[kind]} version {major}.{minor} "
+                  f"(this tool supports {major_ok}.0-{major_ok}.{minor_max})")
         return False
     return True
 
@@ -399,6 +411,7 @@ def _parse_map(path: Path, data: dict, umd_params: dict, rep: Report) -> RegMap 
         rep.error("V-15", path, "poll_groups", f"{len(rm.groups)} groups > limit {LIMITS['groups_per_map']}")
 
     # ---- mappings
+    map_extra = {"bit_mask", "test_vector"} | ({"sim_out_of_range"} if schema_minor(data) >= 2 else set())
     ids: set[int] = set()
     params: set[str] = set()
     for i, m in enumerate(data["mappings"]):
@@ -406,7 +419,7 @@ def _parse_map(path: Path, data: dict, umd_params: dict, rep: Report) -> RegMap 
         if not isinstance(m, dict) or not _require(
                 m, {"mapping_id": int, "param": str, "group": str, "address": int, "type": str,
                     "order": str, "scale": NUM, "offset": NUM, "unit": str, "min": NUM, "max": NUM,
-                    "flags": list}, path, w, rep, extra_ok={"bit_mask", "test_vector"}):
+                    "flags": list}, path, w, rep, extra_ok=map_extra):
             continue
         tag = f"{w} ({m['param']})"
         # V-02 uniqueness
@@ -466,19 +479,51 @@ def _parse_map(path: Path, data: dict, umd_params: dict, rep: Report) -> RegMap 
             rep.error("V-08", path, f"{tag}.offset", "must be finite")
         if not (_finite(m["min"]) and _finite(m["max"])) or not float(m["min"]) < float(m["max"]):
             rep.error("V-08", path, f"{tag}.min", "min and max must be finite with min < max")
+        # V-18 simulation hint
+        oor = m.get("sim_out_of_range")
+        if oor is not None:
+            if not _finite(oor):
+                rep.error("V-18", path, f"{tag}.sim_out_of_range", "must be a finite number")
+                oor = None
+            elif _finite(m["min"]) and _finite(m["max"]) and float(m["min"]) <= float(oor) <= float(m["max"]):
+                rep.error("V-18", path, f"{tag}.sim_out_of_range",
+                          f"{oor} lies inside the range {m['min']}..{m['max']}; it must be outside")
+            elif _finite(m["scale"]) and float(m["scale"]) != 0.0 and _finite(m["offset"]) and \
+                    not _encodable(typ, (float(oor) - float(m["offset"])) / float(m["scale"])):
+                rep.error("V-18", path, f"{tag}.sim_out_of_range", f"{oor} cannot be encoded as {typ}")
         rm.mappings.append(Mapping(
             mapping_id=m["mapping_id"], param=m["param"],
             runtime_id=info.runtime_id if info else 0, group_index=max(gi, 0), group_name=m["group"],
             address=m["address"], type=typ, order=order if order in ORDERS else "AB",
             scale=float(m["scale"]), offset=float(m["offset"]), unit=m["unit"],
             min=float(m["min"]), max=float(m["max"]), flags=flags,
-            bit_mask=mask if isinstance(mask, int) else 0, test_vector=str(m.get("test_vector", ""))))
+            bit_mask=mask if isinstance(mask, int) else 0, test_vector=str(m.get("test_vector", "")),
+            role=info.role if info else "", sim_out_of_range=float(oor) if oor is not None else None))
     if len(rm.mappings) > LIMITS["mappings_per_map"]:
         rep.error("V-15", path, "mappings", f"{len(rm.mappings)} mappings > limit {LIMITS['mappings_per_map']}")
+    # V-17 one active power source per map (counter plausibility, WP5 Design 5.5)
+    power = [m for m in rm.mappings if m.role == ROLE_ACTIVE_POWER]
+    if len(power) > 1:
+        rep.error("V-17", path, "mappings",
+                  f"{len(power)} mappings with role '{ROLE_ACTIVE_POWER}' ({', '.join(m.param for m in power)}); "
+                  "at most one is allowed")
+    if not power and any("ROLLOVER" in m.flags for m in rm.mappings):
+        rep.error("V-17", path, "mappings",
+                  f"a ROLLOVER counter needs exactly one mapping with role '{ROLE_ACTIVE_POWER}' "
+                  "for its plausibility limit")
     return rm
 
 
-def _parse_profile(path: Path, data: dict, rep: Report) -> Profile | None:
+def _encodable(typ: str, raw: float) -> bool:
+    """Can the raw value be sent in a register of this type (V-18)?"""
+    if typ == "FLOAT32":
+        return math.isfinite(raw) and abs(raw) <= 3.4028234663852886e38
+    lo, hi = {"UINT16": (0, 0xFFFF), "BITFIELD16": (0, 0xFFFF), "INT16": (-0x8000, 0x7FFF),
+              "UINT32": (0, 0xFFFFFFFF), "INT32": (-0x80000000, 0x7FFFFFFF)}[typ]
+    return lo <= round(raw) <= hi
+
+
+def _parse_profile(path: Path, data: dict, caps_table: dict, rep: Report) -> Profile | None:
     if not _check_schema(data, "profile", path, rep):
         return None
     if not _require(data, {"schema": str, "profile_id": str, "profile_version": str, "classification": str,
@@ -505,9 +550,17 @@ def _parse_profile(path: Path, data: dict, rep: Report) -> Profile | None:
     if ok and conv["ratio_handling"] not in RATIO_HANDLING:
         rep.error("V-01", path, "conventions.ratio_handling", f"must be one of {sorted(RATIO_HANDLING)}")
         ok = False
+    if ok and conv["power_sign"] not in POWER_SIGNS:
+        rep.error("V-01", path, "conventions.power_sign", f"must be one of {list(POWER_SIGNS)}")
+        ok = False
+    pf_allowed = PF_SIGNS[min(schema_minor(data), max(PF_SIGNS))]
+    if ok and conv["pf_sign"] not in pf_allowed:
+        rep.error("V-01", path, "conventions.pf_sign",
+                  f"must be one of {list(pf_allowed)} for schema {data['schema']}")
+        ok = False
     caps = data["capabilities"]
     for k, v in caps.items():
-        if k not in CAPABILITIES:
+        if k not in caps_table:
             rep.error("V-11", path, f"capabilities.{k}", "unknown capability")
         elif not isinstance(v, bool):
             rep.error("V-01", path, f"capabilities.{k}", "must be true or false")
@@ -515,20 +568,26 @@ def _parse_profile(path: Path, data: dict, rep: Report) -> Profile | None:
         return None
     return Profile(path, data, data["profile_id"], data["profile_version"], data["classification"],
                    data["device_type"], (ref["map_id"], ref["map_version"]), conv["ratio_handling"],
-                   dict(cd), dict(caps))
+                   dict(cd), dict(caps), conv["pf_sign"])
 
 
-def _check_capabilities(prof: Profile, rm: RegMap, rep: Report) -> None:
+def _check_capabilities(prof: Profile, rm: RegMap, caps_table: dict, rep: Report) -> None:
     mapped = {m.param for m in rm.mappings}
     for cap, val in prof.capabilities.items():
-        if val is True and cap in CAPABILITIES and not mapped.intersection(CAPABILITIES[cap]):
+        if val is True and cap in caps_table and not mapped.intersection(caps_table[cap]):
             rep.error("V-11", prof.path, f"capabilities.{cap}",
                       f"capability is true but map {rm.map_id} has no mapping for it")
-    true_params = {p for cap, val in prof.capabilities.items() if val is True for p in CAPABILITIES.get(cap, ())}
+    true_params = {p for cap, val in prof.capabilities.items() if val is True for p in caps_table.get(cap, ())}
     for m in rm.mappings:
         if m.param not in true_params:
             rep.error("V-11", rm.path, f"mappings ({m.param})",
                       f"parameter is mapped but no capability of profile {prof.profile_id} that covers it is true")
+    # V-16 power factor convention
+    if prof.pf_sign == "NOT_APPLICABLE":
+        for m in rm.mappings:
+            if m.role == ROLE_POWER_FACTOR:
+                rep.error("V-16", prof.path, "conventions.pf_sign",
+                          f"NOT_APPLICABLE, but map {rm.map_id} maps {m.param} (role '{ROLE_POWER_FACTOR}')")
 
 
 # ============================================================== validation ===
@@ -541,10 +600,16 @@ def build_model(site_path: Path, target: str, config_dir: Path = DEFAULT_CONFIG_
 
     try:
         umd_data, umd_list = umd_gen.load_umd(umd_path or (config_dir / "umd" / "umd_v1.json"))
+        umd_gen.check_released(umd_list, umd_data, config_dir / "umd" / "released")
     except umd_gen.UmdError as exc:
         rep.error("V-04", "umd/umd_v1.json", "", str(exc))
         return None, rep
+    if umd_data["schema"] != UMD_MIN_SCHEMA:
+        rep.error("V-04", "umd/umd_v1.json", "schema",
+                  f"'{umd_data['schema']}' has no capabilities or roles; this tool needs '{UMD_MIN_SCHEMA}'")
+        return None, rep
     umd_params = {p.name: p for p in umd_list}
+    caps_table = umd_gen.capabilities(umd_data)
 
     site = _load_json(site_path, rep)
     if site is None:
@@ -632,7 +697,7 @@ def build_model(site_path: Path, target: str, config_dir: Path = DEFAULT_CONFIG_
             continue
         prof = next((p for p in profiles if p.profile_id == d["profile_id"]), None)
         if prof is None:
-            prof = _parse_profile(cand[0][0], cand[0][1], rep)
+            prof = _parse_profile(cand[0][0], cand[0][1], caps_table, rep)
             if prof is None:
                 continue
             profiles.append(prof)
@@ -649,7 +714,7 @@ def build_model(site_path: Path, target: str, config_dir: Path = DEFAULT_CONFIG_
                     maps.append(rm)
             rm = next((m for m in maps if (m.map_id, m.version) == prof.map_ref), None)
             if rm is not None:
-                _check_capabilities(prof, rm, rep)
+                _check_capabilities(prof, rm, caps_table, rep)
 
         rm = next((m for m in maps if (m.map_id, m.version) == prof.map_ref), None)
         dev = Device(d["device_instance_id"], d["slot"], d["profile_id"], d["bus_id"], d["slave_id"],
@@ -699,7 +764,7 @@ def build_model(site_path: Path, target: str, config_dir: Path = DEFAULT_CONFIG_
         rep.error("V-15", site_path, "devices", f"more than {LIMITS['mappings_total']} mappings in total")
 
     model = Model(site_path, site, site.get("site_id", ""), target, buses, devices, profiles, maps,
-                  umd_data, umd_params)
+                  umd_data, umd_params, caps_table)
 
     if rep.ok:
         entries = sum(len(model.map_for(model.profile(d.profile_id)).groups) for d in devices if d.enabled)
@@ -834,10 +899,11 @@ def config_crc32(model: Model) -> int:
 
 
 def counter_max_rate(model: Model, prof: Profile) -> float:
-    """Counter plausibility limit per hour: largest |active power| allowed by the map (Design 8.5)."""
+    """Counter plausibility limit per hour: largest |active power| allowed by the map
+    (WP4 Design 8.5); the active power mapping is found by its role (WP5 Design 5.5)."""
     rm = model.map_for(prof)
     for m in rm.mappings:
-        if m.param == ACTIVE_POWER_PARAM:
+        if m.role == ROLE_ACTIVE_POWER:
             return max(abs(m.min), abs(m.max))
     return 0.0
 
@@ -1008,6 +1074,9 @@ def render(model: Model, out_dir: Path | None = None) -> tuple[str, str]:
 
 
 # ============================================================ export-sim ===
+SIMLAYOUT_FORMAT = "myems.simlayout/1.1"     # 1.1: role, pf_sign, device_type, sim_out_of_range
+
+
 def export_sim(model: Model) -> dict:
     """Register layout for the simulator, from the same model as the C tables (GEN-008)."""
     devices = []
@@ -1017,7 +1086,8 @@ def export_sim(model: Model) -> dict:
         devices.append({
             "slot": d.slot, "instance_id": d.instance_id, "slave_id": d.slave_id, "enabled": d.enabled,
             "bus_id": d.bus_id, "ct_ratio": d.ct, "pt_ratio": d.pt, "ratio_handling": p.ratio_handling,
-            "profile_id": p.profile_id, "map_id": rm.map_id, "map_version": rm.version,
+            "profile_id": p.profile_id, "device_type": p.device_type, "pf_sign": p.pf_sign,
+            "map_id": rm.map_id, "map_version": rm.version,
             "classification": rm.classification,
             "poll_groups": [{"name": g.name, "function_code": g.function_code, "start": g.start, "count": g.count,
                              "interval_ms": g.interval_ms, "offset_ms": g.offset_ms,
@@ -1026,9 +1096,11 @@ def export_sim(model: Model) -> dict:
                            "group": m.group_name, "address": m.address, "regs": m.regs, "type": m.type,
                            "order": m.order, "scale": m.scale, "offset": m.offset, "unit": m.unit,
                            "min": m.min, "max": m.max, "flags": m.flags, "bit_mask": m.bit_mask,
-                           "test_vector": m.test_vector} for m in rm.mappings],
+                           "test_vector": m.test_vector, "role": m.role,
+                           **({"sim_out_of_range": m.sim_out_of_range} if m.sim_out_of_range is not None else {})}
+                          for m in rm.mappings],
         })
-    return {"format": "myems.simlayout/1.0", "generated_by": f"myems_profile_tool.py {TOOL_VERSION}",
+    return {"format": SIMLAYOUT_FORMAT, "generated_by": f"myems_profile_tool.py {TOOL_VERSION}",
             "site_id": model.site_id, "target": model.target, "config_crc32": f"0x{config_crc32(model):08X}",
             "inputs_sha256": inputs_hash(model), "buses": [vars(b) for b in model.buses], "devices": devices}
 
@@ -1061,6 +1133,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="myems_profile_tool.py", description=__doc__.split("\n\n")[0])
     ap.add_argument("--config-dir", type=Path, default=DEFAULT_CONFIG_DIR, help="config folder (default: config/)")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("umd-check", help="validate the dictionary (U-01..U-06) and its generated C files")
     for name in ("validate", "generate", "budget", "export-sim"):
         sp = sub.add_parser(name)
         sp.add_argument("--site", type=Path, required=True)
@@ -1073,6 +1146,10 @@ def main(argv: list[str] | None = None) -> int:
         elif name == "export-sim":
             sp.add_argument("--out", type=Path, default=None)
     args = ap.parse_args(argv)
+
+    if args.cmd == "umd-check":
+        return umd_gen.main(["--umd", str(args.config_dir / "umd" / "umd_v1.json"),
+                             "--released-dir", str(args.config_dir / "umd" / "released"), "--check"])
 
     target = getattr(args, "target", "sim")
     model, rep = build_model(args.site, target, args.config_dir)

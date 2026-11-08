@@ -62,7 +62,8 @@ connected to the MyEMS AC meter simulator (`tools/wp4/myems_ac_meter_sim.py`).
 ## Build DP-WP4 simulation firmware for other sites (D9)
 
 `sdkconfig.wp4_sim_2dev` and `sdkconfig.wp4_ratio` are `sdkconfig.wp4_sim` with
-another `CONFIG_MYEMS_SIM_SITE_*` choice: the firmware is built with the tables
+another `CONFIG_MYEMS_SIM_SITE_DIR` value (DP-WP5 M1; it replaced the D9
+choice `MYEMS_SIM_SITE_*`): the firmware is built with the tables
 in `main/generated_sites/lab_bench_2dev/` (two meters, slaves 1 and 2) or
 `main/generated_sites/lab_ratio_ct200/` (CT 200). The HIL runner starts the
 simulator with the matching site and checks that the configuration CRCs agree.

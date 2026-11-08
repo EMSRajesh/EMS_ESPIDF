@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "myems.umd/1.1",
+  "title": "MyEMS Universal Measurement Dictionary",
+  "description": "Documentation schema. The checks that matter (U-01..U-06) are made by tools/profile/umd_gen.py.",
+  "type": "object",
+  "required": ["schema", "umd_version", "domains", "units", "value_types", "parameters", "retired"],
+  "properties": {
+    "schema": { "enum": ["myems.umd/1.0", "myems.umd/1.1"] },
+    "umd_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "description": { "type": "string" },
+    "domains": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "pattern": "^0x[0-9A-Fa-f]{2}$" }
+    },
+    "units": { "type": "array", "items": { "type": "string" } },
+    "value_types": { "type": "array", "items": { "enum": ["float", "counter", "enum"] } },
+    "roles": {
+      "description": "Schema 1.1. Role vocabulary used by the host tools (never emitted to C).",
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z]+(\\.[a-z]+)*$" },
+      "uniqueItems": true
+    },
+    "capabilities": {
+      "description": "Schema 1.1. Profile capability -> parameter ids that implement it (rule V-11).",
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
+      "additionalProperties": { "type": "array", "items": { "type": "string" } }
+    },
+    "parameters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "runtime_id", "unit", "value_type", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9]*(\\.[a-z0-9_]+)+$" },
+          "runtime_id": { "type": "string", "pattern": "^0x[0-9A-Fa-f]{4}$" },
+          "unit": { "type": "string" },
+          "value_type": { "enum": ["float", "counter", "enum"] },
+          "role": { "type": "string", "description": "Schema 1.1. One of 'roles'." },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "retired": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "runtime_id"],
+        "properties": {
+          "id": { "type": "string" },
+          "runtime_id": { "type": "string", "pattern": "^0x[0-9A-Fa-f]{4}$" }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

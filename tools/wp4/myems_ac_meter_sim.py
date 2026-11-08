@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MyEMS DP-WP4 AC meter simulator (milestone D4). SIMULATION ONLY.
+"""MyEMS meter simulator: DP-WP4 AC meter (milestone D4), DP-WP5 DC meter. SIMULATION ONLY.
 
 A Modbus RTU slave that serves the synthetic register maps of config/maps/
 through a USB-RS485 adapter, so the ESP32 can be tested without a real meter.
@@ -9,17 +9,29 @@ simulator cannot drift apart (Plan risk table, GEN-008).
 
 Read-only meter: FC03/FC04 only. Writes and coil reads get exception 01.
 
-Modes (Test Spec Section 18). Syntax NAME[:ARG][@GROUP]; with @GROUP a fault
-mode only affects requests for that poll group of the device's map.
-  NORMAL                    Test Spec 4.1 values, static
-  LOAD_CHANGE[:STEP_S]      deterministic load steps from --seed (default step 10 s)
-  IMPORT                    +12.5 kW; import counter increases
-  EXPORT                    -12.5 kW, PF -0.972; export counter increases
+Value model (DP-WP5 Design Section 8): the simulator works on parameter ROLES
+from the measurement dictionary (power.active, current.signed, energy.import,
+...), carried in the export-sim layout (format myems.simlayout/1.1). It names
+no dictionary parameter, so any device type described by a profile and a map
+is simulated without code changes. The NORMAL value of a parameter is the map's
+test_vector; maps without test vectors (the WP4 AC map) use the LEGACY_WP4
+table below.
+
+Modes (WP4 Test Spec Section 18, WP5 Test Spec Section 8). Syntax
+NAME[:ARG][@GROUP]; with @GROUP a fault mode only affects requests for that
+poll group of the device's map. Values shown for the AC / DC reference meters.
+  NORMAL                    base image (map test vectors), static
+  LOAD_CHANGE[:STEP_S]      deterministic load steps from --seed (default step 10 s):
+                            power and current roles scaled by one factor
+  IMPORT                    power positive (+12.5 kW / +100 kW); import counter increases
+  EXPORT                    power, signed current and signed power factor negated
+                            (-12.5 kW, PF -0.972 / -100 kW, -125 A); export counter increases
   TIMEOUT                   no response
   EXCEPTION[:CODE]          exception response (default code 02)
   BAD_LENGTH                byte count field does not match the payload (CRC valid)
   BAD_CRC                   CRC wrong
-  OUT_OF_RANGE              frequency 30.00 Hz
+  OUT_OF_RANGE              the map's sim_out_of_range value (DC: 1800 V);
+                            maps without one: frequency role 30.00 Hz
   COUNTER_RESET             import counter returns to 0 once, then counts up (IMPORT)
   SLOW[:MS]                 response after MS ms (default 400)
   OFFLINE_THEN_RECOVER[:S]  no response for S s (default 60), then NORMAL
@@ -60,26 +72,32 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-SIM_VERSION = "1.0.0"
+SIM_VERSION = "1.1.0"
+LAYOUT_FORMAT = "myems.simlayout/1.1"   # needs roles (myems_profile_tool.py 1.1.0 or later)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MAX_READ_REGS = 125
 FRAME_GAP_S = 0.05      # same partial-frame discard rule as the COM simulators
 
-# Test Spec 4.1: meter-side values of the NORMAL image (CT = PT = 1).
-NORMAL_VALUES = {
-    "ac.voltage.l1_n": 230.0, "ac.voltage.l2_n": 231.0, "ac.voltage.l3_n": 229.5,
-    "ac.current.l1": 10.0, "ac.current.l2": 10.1, "ac.current.l3": 9.9,
-    "ac.power.active.total": 12.5, "ac.power.reactive.total": 3.0,
-    "ac.power.apparent.total": 12.855, "ac.power.factor.total": 0.972,
-    "ac.frequency": 50.0,
-    "ac.energy.import.active": 100.25, "ac.energy.export.active": 0.0,
-    "dev.status.code": 0.0,
+# LEGACY_WP4: NORMAL image of the WP4 AC map, which has no test vectors
+# (WP4 Test Spec 4.1, meter side, CT = PT = 1). New maps carry test_vector instead.
+LEGACY_WP4_NORMAL_VALUES = {                                   # LEGACY_WP4
+    "ac.voltage.l1_n": 230.0, "ac.voltage.l2_n": 231.0, "ac.voltage.l3_n": 229.5,   # LEGACY_WP4
+    "ac.current.l1": 10.0, "ac.current.l2": 10.1, "ac.current.l3": 9.9,             # LEGACY_WP4
+    "ac.power.active.total": 12.5, "ac.power.reactive.total": 3.0,                  # LEGACY_WP4
+    "ac.power.apparent.total": 12.855, "ac.power.factor.total": 0.972,              # LEGACY_WP4
+    "ac.frequency": 50.0,                                                           # LEGACY_WP4
+    "ac.energy.import.active": 100.25, "ac.energy.export.active": 0.0,              # LEGACY_WP4
+    "dev.status.code": 0.0,                                                         # LEGACY_WP4
 }
-P_PARAM, Q_PARAM, S_PARAM, PF_PARAM = ("ac.power.active.total", "ac.power.reactive.total",
-                                       "ac.power.apparent.total", "ac.power.factor.total")
-CURRENTS = ("ac.current.l1", "ac.current.l2", "ac.current.l3")
-IMPORT_PARAM, EXPORT_PARAM, FREQ_PARAM = "ac.energy.import.active", "ac.energy.export.active", "ac.frequency"
-OUT_OF_RANGE_HZ = 30.0
+NORMAL_VALUES = LEGACY_WP4_NORMAL_VALUES          # LEGACY_WP4: used by the WP4 runner suites
+LEGACY_WP4_OUT_OF_RANGE = ("frequency", 30.0)   # role and value for maps without sim_out_of_range
+
+# Dictionary roles (config/umd/umd_v1.json 'roles') the value model acts on.
+R_POWER, R_REACTIVE, R_APPARENT, R_PF = "power.active", "power.reactive", "power.apparent", "power.factor"
+R_CURRENT, R_CURRENT_SIGNED = "current", "current.signed"
+R_IMPORT, R_EXPORT = "energy.import", "energy.export"
+LOAD_SCALED_ROLES = (R_CURRENT, R_CURRENT_SIGNED)
+FLOAT_DECIMALS = 3          # LOAD_CHANGE rounding for FLOAT32 registers
 
 MODES_WITH_ARG = {"LOAD_CHANGE": 10.0, "EXCEPTION": 2, "SLOW": 400, "OFFLINE_THEN_RECOVER": 60.0}
 MODES = {"NORMAL", "IMPORT", "EXPORT", "TIMEOUT", "BAD_LENGTH", "BAD_CRC", "OUT_OF_RANGE",
@@ -237,6 +255,12 @@ class SimDevice:
         self.regs = self.layout["registers"]
         self.by_param = {r["param"]: r for r in self.regs}
         self.groups = self.layout["poll_groups"]
+        # role -> parameters of this device's map, in map order
+        self.by_role: dict[str, list[str]] = {}
+        for r in self.regs:
+            if r.get("role"):
+                self.by_role.setdefault(r["role"], []).append(r["param"])
+        self.pf_signed = self.layout.get("pf_sign") == "SIGNED_BY_ACTIVE_POWER"
         # (fc, address) -> group name, for every register inside a poll group block
         self.space: dict[tuple[int, int], str] = {}
         for g in self.groups:
@@ -245,15 +269,20 @@ class SimDevice:
         self.reset_values()
 
     # ---- values
+    def role(self, role: str) -> str | None:
+        """First parameter of this map with the role (V-17: at most one active power)."""
+        params = self.by_role.get(role)
+        return params[0] if params else None
+
     def reset_values(self) -> None:
-        """Base image: the map's test_vector if it has one, else Test Spec 4.1, else 0."""
+        """Base image: the map's test_vector if it has one, else the LEGACY_WP4 AC image, else 0."""
         self.base: dict[str, float] = {}
         for r in self.regs:
-            v = NORMAL_VALUES.get(r["param"])
+            v = LEGACY_WP4_NORMAL_VALUES.get(r["param"])
             tv = parse_test_vector(r.get("test_vector", ""))
             self.base[r["param"]] = tv if tv is not None else (v if v is not None else 0.0)
         self.values = dict(self.base)
-        self.energy_acc = {IMPORT_PARAM: 0.0, EXPORT_PARAM: 0.0}
+        self.energy_acc = {p: 0.0 for p in (self.role(R_IMPORT), self.role(R_EXPORT)) if p}
 
     def set_value(self, param: str, value: float) -> None:
         if param not in self.by_param:
@@ -267,32 +296,59 @@ class SimDevice:
             if k in self.values and k not in self.overrides:
                 self.values[k] = v
 
+    def _decimals(self, param: str) -> int:
+        """Rounding of LOAD_CHANGE values: the mapping's resolution (FLOAT32: FLOAT_DECIMALS)."""
+        r = self.by_param[param]
+        if r["type"] == "FLOAT32":
+            return FLOAT_DECIMALS
+        return max(0, math.ceil(-math.log10(abs(r["scale"])) - 1e-9))
+
     def _load_change_values(self, step: int) -> dict[str, float]:
         rng = random.Random(self.seed * 1_000_003 + step)
         f = round(rng.uniform(0.2, 1.2), 2)
-        p, q = round(12.5 * f, 3), round(3.0 * f, 3)
-        s = round(math.hypot(p, q), 3)
-        vals = {P_PARAM: p, Q_PARAM: q, S_PARAM: s, PF_PARAM: round(p / s, 3)}
-        for c in CURRENTS:
-            vals[c] = round(NORMAL_VALUES[c] * f, 2)
+        vals: dict[str, float] = {}
+        p, q, s = self.role(R_POWER), self.role(R_REACTIVE), self.role(R_APPARENT)
+        for k in (p, q):
+            if k:
+                vals[k] = round(self.base[k] * f, self._decimals(k))
+        if s and p:
+            vals[s] = round(math.hypot(vals[p], vals.get(q, 0.0)), self._decimals(s))
+            pf = self.role(R_PF)
+            if pf and vals[s] != 0.0:
+                vals[pf] = round(vals[p] / vals[s], self._decimals(pf))
+        for role in LOAD_SCALED_ROLES:
+            for c in self.by_role.get(role, ()):
+                vals[c] = round(self.base[c] * f, self._decimals(c))
         return vals
 
     def set_mode(self, mode: Mode, now: float) -> None:
         self.update(now)
         self.mode, self.mode_since, self.recovered_logged = mode, now, False
+        imp, exp = self.role(R_IMPORT), self.role(R_EXPORT)
         self.values.update({k: v for k, v in self.base.items()
-                            if k not in (IMPORT_PARAM, EXPORT_PARAM) and k not in self.overrides})
+                            if k not in (imp, exp) and k not in self.overrides})
         if mode.name == "EXPORT":
-            self._set_instant({P_PARAM: -12.5, PF_PARAM: -0.972})
-        elif mode.name == "OUT_OF_RANGE" and FREQ_PARAM in self.values:
-            self._set_instant({FREQ_PARAM: OUT_OF_RANGE_HZ})
-        elif mode.name == "COUNTER_RESET" and IMPORT_PARAM in self.values:
-            self.values[IMPORT_PARAM] = 0.0
-            self.energy_acc[IMPORT_PARAM] = 0.0
+            negate = [self.role(R_POWER)] + self.by_role.get(R_CURRENT_SIGNED, [])
+            if self.pf_signed:
+                negate.append(self.role(R_PF))
+            self._set_instant({k: -self.base[k] for k in negate if k})
+        elif mode.name == "OUT_OF_RANGE":
+            self._set_instant(self._out_of_range_values())
+        elif mode.name == "COUNTER_RESET" and imp:
+            self.values[imp] = 0.0
+            self.energy_acc[imp] = 0.0
             self.log(f"EVENT slave={self.slave_id} COUNTER_RESET import counter -> 0")
         elif mode.name == "LOAD_CHANGE":
             self._set_instant(self._load_change_values(0))
         self.log(f"MODE slave={self.slave_id} mode={mode}")
+
+    def _out_of_range_values(self) -> dict[str, float]:
+        hints = {r["param"]: r["sim_out_of_range"] for r in self.regs if r.get("sim_out_of_range") is not None}
+        if hints:
+            return hints
+        role, value = LEGACY_WP4_OUT_OF_RANGE
+        p = self.role(role)
+        return {p: value} if p else {}
 
     def effective_mode(self, now: float) -> Mode:
         m = self.mode
@@ -312,11 +368,12 @@ class SimDevice:
         if m.name == "LOAD_CHANGE":
             step = int((now - self.mode_since) // float(m.arg))
             self._set_instant(self._load_change_values(step))
-        if m.name not in INTEGRATING or P_PARAM not in self.values:
+        power = self.role(R_POWER)
+        if m.name not in INTEGRATING or power is None:
             return
-        p = self.values[P_PARAM]
-        target = IMPORT_PARAM if p >= 0 else EXPORT_PARAM
-        if target not in self.values:
+        p = self.values[power]
+        target = self.role(R_IMPORT) if p >= 0 else self.role(R_EXPORT)
+        if target is None:
             return
         self.energy_acc[target] += abs(p) * (now - last) / 3600.0
         scale = self.by_param[target]["scale"]
@@ -489,13 +546,24 @@ class Simulator:
 # ================================================================ layout load ===
 def load_layout(site: Path | None = None, layout: Path | None = None) -> dict:
     if layout is not None:
-        return json.loads(Path(layout).read_text(encoding="utf-8"))
-    sys.path.insert(0, str(PROJECT_ROOT / "tools" / "profile"))
-    import myems_profile_tool as tool  # noqa: E402
-    model, rep = tool.build_model(Path(site), "sim")
-    if model is None:
-        raise SystemExit("\n".join(str(e) for e in rep.errors) + "\nsite configuration invalid; simulator not started")
-    return tool.export_sim(model)
+        data = json.loads(Path(layout).read_text(encoding="utf-8"))
+    else:
+        sys.path.insert(0, str(PROJECT_ROOT / "tools" / "profile"))
+        import myems_profile_tool as tool  # noqa: E402
+        model, rep = tool.build_model(Path(site), "sim")
+        if model is None:
+            raise SystemExit("\n".join(str(e) for e in rep.errors) + "\nsite configuration invalid; simulator not started")
+        data = tool.export_sim(model)
+    check_layout(data)
+    return data
+
+
+def check_layout(layout: dict) -> None:
+    """The value model needs parameter roles: refuse older layout files (WP5 Test Spec SIM5-010)."""
+    fmt = layout.get("format")
+    if fmt != LAYOUT_FORMAT:
+        raise SystemExit(f"layout format {fmt!r} is not supported; this simulator needs '{LAYOUT_FORMAT}'. "
+                         "Re-export it with: python tools/profile/myems_profile_tool.py export-sim --site <site>")
 
 
 # ================================================================ serial loop ===

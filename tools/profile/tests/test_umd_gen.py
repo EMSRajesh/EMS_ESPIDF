@@ -155,6 +155,9 @@ class TestGeneration(unittest.TestCase):
         self.assertEqual(self.gen(), 0)
         d = json.loads(self.umd.read_text())
         removed = d["parameters"].pop(1)
+        for plist in d.get("capabilities", {}).values():      # a removed parameter leaves its capability
+            if removed["id"] in plist:
+                plist.remove(removed["id"])
         self.umd.write_text(json.dumps(d), encoding="utf-8")
         self.assertEqual(self.gen(), 1)
         d["retired"].append({"id": removed["id"], "runtime_id": removed["runtime_id"]})

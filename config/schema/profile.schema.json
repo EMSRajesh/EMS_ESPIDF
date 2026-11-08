@@ -21,7 +21,10 @@
       "type": "string"
     },
     "schema": {
-      "const": "myems.profile/1.1"
+      "enum": [
+        "myems.profile/1.1",
+        "myems.profile/1.2"
+      ]
     },
     "profile_id": {
       "type": "string",
@@ -158,8 +161,10 @@
         "pf_sign": {
           "enum": [
             "SIGNED_BY_ACTIVE_POWER",
-            "UNSIGNED"
-          ]
+            "UNSIGNED",
+            "NOT_APPLICABLE"
+          ],
+          "description": "NOT_APPLICABLE needs schema myems.profile/1.2 and a map without a power factor (rule V-16)"
         },
         "ratio_handling": {
           "enum": [

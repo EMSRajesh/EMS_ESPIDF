@@ -108,7 +108,7 @@ class GenTests(unittest.TestCase):
         _, c = tool.render(model)
         crc = f"0x{tool.config_crc32(model):08X}"
         self.assertIn(f'.tool_version = "{tool.TOOL_VERSION}"', c)
-        self.assertIn('.umd_version = "1.0.0"', c)
+        self.assertIn('.umd_version = "1.1.0"', c)
         self.assertIn("profile:AC_METER_3PH_SIM@1.1.0", c)
         self.assertIn("map:MYEMS_SIM_ACMETER_3PH@1.1.0", c)
         self.assertIn(f".crc32 = {crc}u", c)

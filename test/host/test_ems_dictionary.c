@@ -57,7 +57,7 @@ static void test_UMD001_generated_macros_match_design_ids(void)
     TEST_ASSERT_EQUAL_HEX16(0x0124u, EMS_PARAM_AC_POWER_FACTOR_TOTAL);
     TEST_ASSERT_EQUAL_HEX16(0x0130u, EMS_PARAM_AC_FREQUENCY);
     TEST_ASSERT_EQUAL_HEX16(0x0141u, EMS_PARAM_AC_ENERGY_EXPORT_ACTIVE);
-    TEST_ASSERT_EQUAL_STRING("1.0.0", EMS_UMD_VERSION);
+    TEST_ASSERT_EQUAL_STRING("1.1.0", EMS_UMD_VERSION);   /* DP-WP5: roles and capabilities added */
 }
 
 static void test_UMD001_table_sorted_unique_and_domain_consistent(void)

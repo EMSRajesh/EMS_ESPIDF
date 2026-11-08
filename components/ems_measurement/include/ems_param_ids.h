@@ -1,8 +1,8 @@
 /*
  * GENERATED FILE - DO NOT EDIT.
  * Source:    config/umd/umd_v1.json
- * UMD:       1.0.0  (sha256 35872195dd87c1aa)
- * Generator: tools/profile/umd_gen.py 1.0.0
+ * UMD:       1.1.0  (sha256 d93035d4ea0038ca)
+ * Generator: tools/profile/umd_gen.py 1.1.0
  * Regenerate: python tools/profile/umd_gen.py
  */
 #ifndef EMS_PARAM_IDS_H
@@ -10,8 +10,8 @@
 
 #include <stdint.h>
 
-#define EMS_UMD_VERSION "1.0.0"
-#define EMS_UMD_SHA256_PREFIX "35872195dd87c1aa"
+#define EMS_UMD_VERSION "1.1.0"
+#define EMS_UMD_SHA256_PREFIX "d93035d4ea0038ca"
 #define EMS_PARAM_COUNT 14u
 
 /* Domain codes: high byte of a runtime ID. */
