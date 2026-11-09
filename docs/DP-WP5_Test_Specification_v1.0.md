@@ -143,7 +143,7 @@ Run through the host engine (`ems_regmap_convert`, `ems_counter_update`) with th
 |---|---|---|
 | DC-001 | Boot | Banner: site LAB_DC_BENCH, classification SIMULATION_ONLY, CRC 0xCC22DC64; polling starts; simulator log shows FC04 and FC03 requests to slave 3 only |
 | DC-002 | NORMAL | All six parameters GOOD with the 2.1 values |
-| DC-003 | Group intervals | `measurements` every 4 s ± 100 ms; `energy` 10 s; `status` 30 s; offsets as Design 6.2 |
+| DC-003 | Group intervals (simulator receive times, first attempts) | `measurements` 4 s, `energy` 10 s, `status` 30 s: mean interval within ± 0.1 s, every interval within ± 0.5 s. Offsets are not measured on the board (the firmware start time is not visible to the simulator) |
 | DC-004 | IMPORT | Power and current positive GOOD; import counter increases between energy polls |
 | DC-005 | EXPORT | Power and current negative GOOD; export counter increases; import counter unchanged |
 | DC-006 | OUT_OF_RANGE | `dc.voltage` OUT_OF_RANGE; other parameters stay GOOD |

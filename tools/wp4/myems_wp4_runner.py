@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MyEMS DP-WP4 HIL runner (suites d6, d7, esc, reject, two_dev, ratio, load, soak).
+"""MyEMS DP-WP4/WP5 HIL runner (suites d6, d7, esc, reject, two_dev, ratio, load, soak, dc).
 
 Runs the AC meter simulator on the RS-485 adapter, captures the ESP32 console,
 steps the simulator through a sequence of modes (control file) and checks the
@@ -10,6 +10,7 @@ monitor on the console port:
     suites d6, d7:  .\\tools\\build_firmware.ps1 -Mode Wp4Sim -Port COM11 -Flash
     suite esc:      .\\tools\\build_firmware.ps1 -Mode Wp4Esc -Port COM11 -Flash
     suite reject:   .\\tools\\build_firmware.ps1 -Mode Production -Port COM11 -Flash
+    suite dc:       .\\tools\\build_firmware.ps1 -Mode Wp5Dc -Port COM11 -Flash
 
 Suites:
   d6      values and qualities (~5 min): UMD-001/004/006/007/008,
@@ -34,6 +35,10 @@ Suites:
           OFFLINE_THEN_RECOVER:300 every 10 min; default 24 h
           (--duration-min 60 for the dry run); PERF-002..006. Ctrl+C stops
           early and still analyses what was captured.
+  dc      DP-WP5 DC meter alone (-Mode Wp5Dc, site lab_dc_bench, slave 3,
+          ~9 min): DC-001..DC-012. The expected values, signs and the
+          out-of-range case come from the map (export-sim test vectors and
+          parameter roles), not from DC constants in this file.
 All suites also check: no reboot, no routing errors, stack margin.
 Result: FAIL if any check fails; BLOCK rows (requirement not testable against
 the current COM layer) are listed but do not fail the run.
@@ -164,6 +169,24 @@ SUITE_RATIO = [
     ("vectors", "NORMAL|" + RATIO_SETS, 30),
 ]
 
+# DP-WP5 M4: DC meter alone (Test Spec 9, DC-001..DC-012), site lab_dc_bench.
+SUITE_DC = [
+    ("normal", "NORMAL", 40),
+    ("import", "IMPORT", 40),
+    ("export", "EXPORT", 40),
+    ("out_of_range", "OUT_OF_RANGE", 20),
+    ("counter_reset", "COUNTER_RESET", 25),
+    ("slow", "SLOW:400", 30),
+    ("exception_energy", "EXCEPTION:02@energy", 25),
+    ("timeout", "TIMEOUT", 30),
+    ("recover", "NORMAL", 45),
+    ("offline_recover", "OFFLINE_THEN_RECOVER:65", 100),
+    ("bad_crc", "BAD_CRC", 30),
+    ("recover_crc", "NORMAL", 45),
+    ("final", "NORMAL", 15),
+]
+DC_SLAVE = 3
+
 SOAK_CYCLE = [("normal", "NORMAL"), ("timeout", "TIMEOUT"), ("offline_recover", "OFFLINE_THEN_RECOVER:300")]
 SOAK_PHASE_S = 600
 OTR_SILENT_S = 300
@@ -180,12 +203,13 @@ def load_phases(duration_min: int) -> list[tuple[str, str, int]]:
 
 
 SUITES = {"d6": SUITE_D6, "d7": SUITE_D7, "esc": SUITE_ESC, "reject": SUITE_REJECT,
-          "two_dev": SUITE_TWO_DEV, "ratio": SUITE_RATIO, "load": None, "soak": None}
+          "two_dev": SUITE_TWO_DEV, "ratio": SUITE_RATIO, "load": None, "soak": None, "dc": SUITE_DC}
 BOOT_TARGET = {"d6": "sim", "d7": "sim", "esc": "sim", "reject": "prod", "two_dev": "sim", "ratio": "sim",
-               "load": "sim", "soak": "sim"}
-SUITE_SITE = {"two_dev": "lab_bench_2dev", "load": "lab_bench_2dev", "ratio": "lab_ratio_ct200"}
+               "load": "sim", "soak": "sim", "dc": "sim"}
+SUITE_SITE = {"two_dev": "lab_bench_2dev", "load": "lab_bench_2dev", "ratio": "lab_ratio_ct200",
+              "dc": "lab_dc_bench"}
 SUITE_BUILD = {"two_dev": "Wp4Sim2Dev", "load": "Wp4Sim2Dev", "ratio": "Wp4Ratio", "esc": "Wp4Esc",
-               "reject": "Production"}
+               "reject": "Production", "dc": "Wp5Dc"}
 DEFAULT_DURATION_MIN = {"load": 60, "soak": 1440}
 
 
@@ -999,8 +1023,298 @@ def analyse_soak(lines: list[tuple[float, str]], phases: list[Phase], expected_c
     return rep
 
 
+# ========================================================= DP-WP5 meters ===
+# The analysis works on parameter ROLES from the export-sim layout (DP-WP5
+# Design 4.3), so it names no DC parameter: any meter described by a profile
+# and a map can be checked the same way (Design open item 6).
+@dataclass
+class MeterInfo:
+    slave: int
+    slot: int
+    normal: dict[str, float]          # NORMAL image (map test vectors)
+    params: list[str]
+    power: str | None                 # role power.active
+    signed: list[str]                 # roles power.active, current.signed (and power.factor if signed)
+    imp: str | None                   # role energy.import
+    exp: str | None                   # role energy.export
+    oor: dict[str, float]             # sim_out_of_range per parameter
+    groups: dict[str, tuple[int, int, int]]   # name -> (function code, start, count)
+    group_of: dict[str, str]          # parameter -> group name
+    status_group: str | None          # group of the role 'status' parameter (probe group)
+    interval_s: dict[str, float]
+
+
+def meter_info(layout: dict, slave: int) -> MeterInfo:
+    dev = next(d for d in layout["devices"] if d["slave_id"] == slave)
+    sim = sim_mod.Simulator(layout, seed=1, clock=lambda: 0.0)
+    regs = dev["registers"]
+    roles: dict[str, list[str]] = {}
+    for r in regs:
+        roles.setdefault(r.get("role", ""), []).append(r["param"])
+    first = lambda role: (roles.get(role) or [None])[0]                          # noqa: E731
+    signed = [p for p in (first("power.active"),) if p] + roles.get("current.signed", [])
+    if dev.get("pf_sign") == "SIGNED_BY_ACTIVE_POWER":
+        signed += roles.get("power.factor", [])
+    status = first("status")
+    group_of = {r["param"]: r["group"] for r in regs}
+    return MeterInfo(slave, dev["slot"], dict(sim.devices[slave].base), [r["param"] for r in regs],
+                     first("power.active"), signed, first("energy.import"), first("energy.export"),
+                     {r["param"]: r["sim_out_of_range"] for r in regs if r.get("sim_out_of_range") is not None},
+                     {g["name"]: (g["function_code"], g["start"], g["count"]) for g in dev["poll_groups"]},
+                     group_of, group_of.get(status) if status else None,
+                     {g["name"]: g["interval_ms"] / 1000.0 for g in dev["poll_groups"]})
+
+
+def parse_sim_rx_fc(sim_lines: list[str]) -> list[tuple[float, int, int, int]]:
+    """Simulator log -> (wall time, slave, function code, start address) of every request."""
+    out = []
+    for ln in sim_lines:
+        m = SIM_RX_RE.match(ln)
+        if not m:
+            continue
+        b = bytes.fromhex(m.group(4))
+        if len(b) < 6:
+            continue
+        try:
+            w = dt.datetime.fromisoformat(m.group(1)).timestamp()
+        except ValueError:
+            continue
+        out.append((w, int(m.group(2)), int(m.group(3), 16), (b[2] << 8) | b[3]))
+    return out
+
+
+def _meter_good(rep: Report, d: Dump | None, mi: MeterInfo, expect: dict[str, float], test: str, text: str) -> None:
+    if d is None:
+        return
+    bad = [f"{k}={d.vals[k].value:g} {d.vals[k].q}" if k in d.vals else f"{k} missing"
+           for k in mi.params if k not in d.vals or d.vals[k].q != "GOOD" or
+           (k in expect and not _close(d.vals[k].value, expect[k]))]
+    rep.check(d.mode == "ONLINE" and not bad, test, f"{text}: mode {d.mode}" + (f"; wrong: {', '.join(bad)}" if bad
+                                                                                  else ", all GOOD"))
+
+
+def _meter_offline(rep: Report, lines, dumps: list[Dump], ph: Phase | None, mi: MeterInfo, test: str,
+                   max_s: float) -> None:
+    if ph is None:
+        rep.check(False, test, "phase missing")
+        return
+    offs = [(t, s) for t, s in lines if ph.t0 <= t <= ph.t1 and "EVT_DEVICE_OFFLINE" in ANSI_RE.sub("", s)]
+    ok = len(offs) == 1 and f"slot={mi.slot}" in ANSI_RE.sub("", offs[0][1])
+    if not rep.check(ok and offs[0][0] - ph.t0 <= max_s, test,
+                     f"{len(offs)} EVT_DEVICE_OFFLINE for slot {mi.slot}"
+                     + (f", {offs[0][0] - ph.t0:.1f} s after the simulator stopped answering (<= {max_s:.0f} s)"
+                        if offs else "")):
+        return
+    on = [t for t in _evt_times(lines, "DEVICE_ONLINE", ph) if t > offs[0][0]]
+    t_end = on[0] - 0.5 if on else ph.t1
+    after = [x for x in dumps if x.slot == mi.slot and offs[0][0] + 0.5 < x.t <= t_end]
+    if rep.check(bool(after), test, f"{len(after)} value dump(s) while OFFLINE"):
+        x = after[-1]
+        nl = [k for k, v in x.vals.items() if v.q != "COMM_LOST"]
+        rep.check(x.mode == "OFFLINE" and not nl, test, f"mode {x.mode}, all parameters COMM_LOST"
+                  + (f"; not: {nl}" if nl else ""))
+    # never zero: no GOOD value at all after the loss was detected, and the kept values are the last GOOD ones
+    zero = [(k, v.value) for x in after for k, v in x.vals.items() if v.q == "GOOD"]
+    rep.check(not zero, test, "no parameter GOOD after the loss (failure is never published as a value)")
+    if mi.power and after and mi.power in after[-1].vals:
+        p = after[-1].vals[mi.power]
+        rep.check(p.value != 0.0, test, f"{mi.power} keeps its last GOOD value {p.value:g} (not 0)")
+
+
+def _meter_online(rep: Report, lines, dumps: list[Dump], ph: Phase | None, mi: MeterInfo, test: str,
+                  min_s: float, max_s: float) -> float | None:
+    if ph is None:
+        rep.check(False, test, "phase missing")
+        return None
+    on = _evt_times(lines, "DEVICE_ONLINE", ph)
+    if rep.check(len(on) == 1 and min_s <= on[0] - ph.t0 <= max_s, test,
+                 f"{len(on)} EVT_DEVICE_ONLINE" + (f", {on[0] - ph.t0:.1f} s into the phase "
+                                                    f"(expected {min_s:.0f}..{max_s:.0f} s)" if on else "")):
+        d = [x for x in dumps if x.slot == mi.slot and on[0] < x.t <= ph.t1]
+        if rep.check(bool(d), test, f"{len(d)} dump(s) after ONLINE"):
+            bad = [k for k, v in d[-1].vals.items() if v.q != "GOOD"]
+            rep.check(d[-1].mode == "ONLINE" and not bad, test, f"end of phase: mode {d[-1].mode}, "
+                      + ("all GOOD again" if not bad else f"not GOOD: {bad}"))
+        return on[0]
+    return None
+
+
+def analyse_dc(lines: list[tuple[float, str]], phases: list[Phase], expected_crc: str | None = None,
+               sim_lines: list[str] | None = None, layout: dict | None = None, slave: int = DC_SLAVE) -> Report:
+    """DP-WP5 Test Spec 9: DC-001..DC-012 for the DC meter alone (site lab_dc_bench)."""
+    rep = Report()
+    layout = layout or sim_mod.load_layout(suite_site("dc"))
+    mi = meter_info(layout, slave)
+    dumps = [d for d in parse_console(lines) if d.slot == mi.slot]
+    text_all = [ANSI_RE.sub("", s) for _, s in lines]
+    rx = parse_sim_rx_fc(sim_lines or [])
+    meas_grp = mi.group_of.get(mi.power or "", "")
+
+    # ---- DC-001 boot, configuration, function codes
+    _boot(rep, text_all, "sim", expected_crc)
+    rep.check(any(POLL_START_RE.search(s) for s in text_all), "DC-001", "polling started")
+    rep.info(f"{len(dumps)} value dumps, {len(rx)} simulator requests captured; slave {slave} = slot {mi.slot}")
+    if rx:
+        slaves = sorted({r[1] for r in rx})
+        rep.check(slaves == [slave], "DC-001", f"requests to slave(s) {slaves} (expected only {slave})")
+        expected = {(fc, st) for fc, st, _ in mi.groups.values()}
+        seen = {(r[2], r[3]) for r in rx if r[1] == slave}
+        rep.check(seen == expected, "DC-001", "function code per group: "
+                  + ", ".join(f"FC{fc:02d}@{st}" for fc, st in sorted(seen, key=lambda x: x[1]))
+                  + ("" if seen == expected else
+                     f" (expected {', '.join(f'FC{fc:02d}@{st}' for fc, st in sorted(expected, key=lambda x: x[1]))})"))
+    else:
+        rep.check(False, "DC-001", "no simulator requests in sim.log")
+
+    # ---- DC-002 NORMAL values (map test vectors)
+    d = _last(rep, dumps, _phase(phases, "normal"), 15, "DC-002")
+    _meter_good(rep, d, mi, mi.normal, "DC-002", f"{len(mi.params)} parameters with the map test vectors")
+    if d:
+        rep.check(len(d.vals) == len(mi.params), "DC-002", f"{len(d.vals)} parameters published "
+                  f"(map has {len(mi.params)})")
+
+    # ---- DC-003 group intervals (simulator side, first attempts only)
+    ans = [p for p in phases if p.name in ("normal", "import", "export", "out_of_range", "counter_reset")]
+    if ans and ans[0].w0 is not None and rx:
+        w0, w1 = ans[0].w0, ans[-1].w1 or 0.0
+        for name, (fc, start, _) in sorted(mi.groups.items(), key=lambda g: g[1][1]):
+            iv = mi.interval_s[name]
+            starts = transactions([r[0] for r in rx if r[1] == slave and r[3] == start and w0 <= r[0] <= w1],
+                                  gap=min(2.0, iv / 2))
+            gaps = [b - a for a, b in zip(starts, starts[1:])]
+            if not gaps:
+                rep.check(iv > (w1 - w0) / 2, "DC-003", f"{name}: fewer than 2 polls in {w1 - w0:.0f} s "
+                          f"(interval {iv:g} s)")
+                continue
+            mean = sum(gaps) / len(gaps)
+            rep.check(abs(mean - iv) <= 0.1 and all(abs(g - iv) <= 0.5 for g in gaps), "DC-003",
+                      f"{name} (FC{fc:02d} @{start}): mean interval {mean:.3f} s over {len(gaps)}, "
+                      f"range {min(gaps):.2f}..{max(gaps):.2f} s (expected {iv:g} s, mean +- 0.1, each +- 0.5)")
+    else:
+        rep.info("DC-003 not checked: no simulator log or phase wall times")
+
+    # ---- DC-004 IMPORT / DC-005 EXPORT
+    for name, test, sign, counter, other in (("import", "DC-004", +1.0, mi.imp, mi.exp),
+                                             ("export", "DC-005", -1.0, mi.exp, mi.imp)):
+        ph = _phase(phases, name)
+        ds = dumps_in(dumps, ph, 15, mi.slot) if ph else []
+        if not rep.check(len(ds) >= 2, test, f"{len(ds)} dumps in phase '{name}' after 15 s"):
+            continue
+        expect = dict(mi.normal)
+        for k in mi.signed:
+            expect[k] = sign * abs(mi.normal[k])
+        cols = {k: v for k, v in expect.items() if k not in (mi.imp, mi.exp)}
+        _meter_good(rep, ds[-1], mi, cols, test, "signed values " + ", ".join(f"{k}={cols[k]:g}" for k in mi.signed))
+        a, b = ds[0].vals.get(counter or ""), ds[-1].vals.get(counter or "")
+        rep.check(bool(a and b and b.q == "GOOD" and b.value > a.value), test,
+                  f"{counter} {a.value:g} -> {b.value:g} kWh (rising)" if a and b else f"no {counter}")
+        a, b = ds[0].vals.get(other or ""), ds[-1].vals.get(other or "")
+        rep.check(bool(a and b and _close(a.value, b.value)), test,
+                  f"{other} unchanged ({b.value:g} kWh)" if a and b else f"no {other}")
+
+    # ---- DC-006 OUT_OF_RANGE
+    d = _last(rep, dumps, _phase(phases, "out_of_range"), 8, "DC-006")
+    if d and rep.check(bool(mi.oor), "DC-006", f"out-of-range parameter(s) from the map: {sorted(mi.oor)}"):
+        for k, v in mi.oor.items():
+            x = d.vals.get(k)
+            rep.check(x is not None and x.q == "OUT_OF_RANGE" and _close(x.value, v), "DC-006",
+                      f"{k} {x.value:g} {x.q}" if x else f"no {k}")
+        same = [k for k in mi.params if mi.group_of[k] in {mi.group_of[o] for o in mi.oor} and k not in mi.oor]
+        bad = [k for k in same if k not in d.vals or d.vals[k].q != "GOOD"]
+        rep.check(not bad, "DC-006", f"other parameters of the group stay GOOD ({', '.join(same)})"
+                  + (f"; not GOOD: {bad}" if bad else ""))
+
+    # ---- DC-007 COUNTER_RESET
+    ph = _phase(phases, "counter_reset")
+    if ph:
+        evt = [s for s in lines_in(lines, ph) if "EVT_COUNTER_DISCONTINUITY" in s]
+        rep.check(len(evt) == 1 and f"param={mi.imp}" in evt[0], "DC-007",
+                  f"{len(evt)} EVT_COUNTER_DISCONTINUITY (expected exactly 1, for {mi.imp})")
+        ds = [x for x in dumps_in(dumps, ph, 0, mi.slot) if mi.imp in x.vals]
+        after = [x for x in ds if x.vals[mi.imp].value < mi.normal.get(mi.imp, 0.0)]
+        if rep.check(len(after) >= 2, "DC-007", f"{len(after)} dump(s) after the reset"):
+            a, b = after[0].vals[mi.imp], after[-1].vals[mi.imp]
+            rep.check(a.q == b.q == "GOOD" and b.value > a.value, "DC-007",
+                      f"{mi.imp} {a.value:g} -> {b.value:g} kWh, GOOD, counting from the new baseline")
+
+    # ---- DC-012 SLOW:400 (answers inside the 500 ms timeout)
+    ph = _phase(phases, "slow")
+    if ph:
+        warns = [s for s in lines_in(lines, ph) if TIMEOUT_WARN_RE.search(s) or "EVT_DEVICE_OFFLINE" in s]
+        rep.check(not warns, "DC-012", "no timeout or OFFLINE while answers take 400 ms"
+                  + (f": {warns[0][:80]}" if warns else ""))
+        d = _last(rep, dumps, ph, 10, "DC-012")
+        if d:
+            bad = [k for k, v in d.vals.items() if v.q != "GOOD"]
+            rep.check(d.mode == "ONLINE" and not bad, "DC-012", f"mode {d.mode}, all GOOD"
+                      + (f"; not GOOD: {bad}" if bad else ""))
+        if ph.w0 is not None and rx:
+            req = [r for r in rx if r[1] == slave and ph.w0 + 1 <= r[0] <= (ph.w1 or 0)]
+            retries = 0
+            for _, start, _ in mi.groups.values():
+                ts = [r[0] for r in req if r[3] == start]
+                retries += len(ts) - len(transactions(ts, gap=2.0))   # a retry follows within ~1.6 s
+            rep.check(bool(req) and retries == 0, "DC-012", f"{len(req)} request(s), {retries} retries")
+
+    # ---- DC-010 EXCEPTION on the energy group
+    ph = _phase(phases, "exception_energy")
+    d = _last(rep, dumps, ph, 15, "DC-010")
+    if d and ph:
+        energy = [k for k in mi.params if mi.group_of[k] == mi.group_of.get(mi.imp or "")]
+        e = {k: d.vals[k].q for k in energy if k in d.vals}
+        rep.check(d.mode == "ONLINE" and e and all(q == "INVALID" for q in e.values()), "DC-010",
+                  f"mode {d.mode}, energy group {e}")
+        others = [k for k in mi.params if k not in energy and (k not in d.vals or d.vals[k].q != "GOOD")]
+        rep.check(not others, "DC-010", "other groups stay GOOD" + (f"; not: {others}" if others else ""))
+        evt = [s for s in lines_in(lines, ph) if "EVT_MODBUS_EXCEPTION" in s and "code=0x02" in s]
+        rep.check(bool(evt), "DC-010", f"{len(evt)} EVT_MODBUS_EXCEPTION code=0x02 line(s)")
+        rep.check(not _evt_times(lines, "DEVICE_OFFLINE", ph), "DC-010", "no EVT_DEVICE_OFFLINE")
+
+    # ---- DC-008 TIMEOUT; recovery
+    meas_iv = mi.interval_s.get(meas_grp, 5.0)
+    _meter_offline(rep, lines, dumps, _phase(phases, "timeout"), mi, "DC-008", 2 * meas_iv + 3.2 + 3.0)
+    _meter_online(rep, lines, dumps, _phase(phases, "recover"), mi, "DC-008", 0.0, 33.0)
+
+    # ---- DC-009 OFFLINE_THEN_RECOVER:65, probing on the status group
+    ph = _phase(phases, "offline_recover")
+    _meter_offline(rep, lines, dumps, ph, mi, "DC-009", 2 * meas_iv + 3.2 + 3.0)
+    on = _meter_online(rep, lines, dumps, ph, mi, "DC-009", 64.0, 100.0)
+    off = _evt_times(lines, "DEVICE_OFFLINE", ph)
+    if ph and off and ph.w0 is not None and rx and mi.status_group:
+        w_off = _to_wall(ph, off[0])
+        w_on = _to_wall(ph, on) if on is not None else ph.w1
+        st = mi.groups[mi.status_group][1]
+        between = [r for r in rx if r[1] == slave and w_off + 0.2 < r[0] < (w_on or 0) - 0.2]
+        others = [r for r in between if r[3] != st]
+        rep.check(not others, "DC-009", f"only the {mi.status_group} group (@{st}) polled while OFFLINE "
+                  f"({len(between)} request(s), {len(others)} other)")
+        probes = transactions([r[0] for r in rx if r[1] == slave and r[3] == st
+                               and w_off + 0.2 < r[0] <= (w_on or 0) + 0.5])
+        gaps = [b - a for a, b in zip(probes, probes[1:])]
+        rep.check(len(probes) >= 2 and 29.0 <= probes[0] - w_off <= 32.0 and all(abs(g - 30.0) <= 1.0 for g in gaps),
+                  "DC-009", f"{len(probes)} probe(s): first {probes[0] - w_off if probes else float('nan'):.1f} s "
+                  f"after OFFLINE, then {', '.join(f'{g:.1f}' for g in gaps) or '-'} s (30 +- 1 s)")
+        if on is not None:
+            after = {r[3] for r in rx if r[1] == slave and (w_on or 0) - 0.5 <= r[0] <= (w_on or 0) + 3.0
+                     and r[3] != st}
+            rep.check(len(after) >= len(mi.groups) - 1, "DC-009",
+                      f"after ONLINE all groups polled at once (start addresses {sorted(after)} within 3 s)")
+
+    # ---- DC-011 BAD_CRC; recovery
+    _meter_offline(rep, lines, dumps, _phase(phases, "bad_crc"), mi, "DC-011", 2 * meas_iv + 3.2 + 3.0)
+    _meter_online(rep, lines, dumps, _phase(phases, "recover_crc"), mi, "DC-011", 0.0, 33.0)
+
+    d = _last(rep, dumps, _phase(phases, "final"), 0, "DC-002")
+    _meter_good(rep, d, mi, {k: v for k, v in mi.normal.items() if k not in (mi.imp, mi.exp)}, "DC-002",
+                "end of run")
+    _no_overlap(rep, sim_lines or [], "SCH-003")
+    _whole_run(rep, text_all)
+    return rep
+
+
 ANALYSERS = {"d6": analyse_d6, "d7": analyse_d7, "esc": analyse_esc, "reject": analyse_reject,
-             "two_dev": analyse_two_dev, "ratio": analyse_ratio, "load": analyse_load, "soak": analyse_soak}
+             "two_dev": analyse_two_dev, "ratio": analyse_ratio, "load": analyse_load, "soak": analyse_soak,
+             "dc": analyse_dc}
 
 
 # ================================================================ running ===
@@ -1202,7 +1516,7 @@ def load_saved(out: Path):
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="MyEMS DP-WP4 HIL runner")
+    ap = argparse.ArgumentParser(description="MyEMS DP-WP4/WP5 HIL runner")
     ap.add_argument("--suite", choices=sorted(SUITES), default="d7")
     ap.add_argument("--console-port", default="COM11")
     ap.add_argument("--rs485-port", default="COM12")

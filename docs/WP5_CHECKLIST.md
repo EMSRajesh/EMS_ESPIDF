@@ -8,8 +8,8 @@ Specifications: `docs/DP-WP5_Design_Specification_v1.0.md`, `docs/DP-WP5_Develop
 | M0 | D9 committed (c987e4e); D9 HIL run deferred by the user | Done |
 | M1 | Framework generalisation, AC data only | Done, tag `dp-wp5-m1` (635edd4) |
 | M2 | DC meter data only | Done, tag `dp-wp5-m2` (12a6bc0) |
-| M3 | Host decode and simulator (DC) | Delivered, to be committed |
-| M4 | HIL, DC meter alone | – |
+| M3 | Host decode and simulator (DC) | Done, tag `dp-wp5-m3` (391e8fd) |
+| M4 | HIL, DC meter alone | Runner suite `dc` delivered; HIL run pending |
 | M5 | HIL, mixed AC + DC site | – |
 | M6 | Stabilisation and acceptance | – |
 
@@ -154,4 +154,44 @@ python -m unittest discover -s tools/wp4/tests
 cmake -S test/host -B build_host; cmake --build build_host; ctest --test-dir build_host
 ```
 
-Next: M4 (HIL, DC meter alone) needs a runner suite `dc` and the board.
+
+## M4 — HIL, DC meter alone
+
+Test code only (runner and its tests); firmware, configuration, tool and
+simulator unchanged.
+
+| File | Content |
+|---|---|
+| `tools/wp4/myems_wp4_runner.py` | Suite `dc` (site `lab_dc_bench`, build `Wp5Dc`, 13 phases, about 8 min plus boot and the STATS wait). Analysis `analyse_dc` works on parameter **roles** from the export-sim layout: the NORMAL values come from the map test vectors, the signed parameters from `power.active` / `current.signed`, the out-of-range case from `sim_out_of_range`, the probe group from the `status` role. It names no DC parameter. |
+| `tools/wp4/tests/test_wp4_runner_wp5.py` (new) | A scripted DC run that follows the design passes every DC check; 9 deliberate deviations (wrong FC, wrong CRC, interval drift, wrong export sign, out-of-range not flagged, two discontinuities, retry under SLOW, GOOD value after the loss, other group polled while OFFLINE) each fail the check that covers them |
+| `docs/DP-WP5_Test_Specification_v1.0.md` | DC-003 states how intervals are measured (simulator receive times; offsets not measurable on the board) |
+
+### Phases of suite `dc`
+
+| Phase | Simulator | s | Checks |
+|---|---|---|---|
+| normal | NORMAL | 40 | DC-001 (CRC, slave 3 only, FC04@0, FC04@100, FC03@200), DC-002 (6 values = map test vectors) |
+| import | IMPORT | 40 | DC-004: +100 kW, +125 A GOOD; import counter rises, export unchanged |
+| export | EXPORT | 40 | DC-005: −100 kW, −125 A GOOD; export counter rises, import unchanged |
+| out_of_range | OUT_OF_RANGE | 20 | DC-006: 1800 V OUT_OF_RANGE; current and power stay GOOD |
+| counter_reset | COUNTER_RESET | 25 | DC-007: exactly one discontinuity event for the import counter; counts again from 0 |
+| slow | SLOW:400 | 30 | DC-012: no timeout, no retry, all GOOD |
+| exception_energy | EXCEPTION:02@energy | 25 | DC-010: energy INVALID, others GOOD, device ONLINE, event code 0x02 |
+| timeout | TIMEOUT | 30 | DC-008: OFFLINE within 14 s, all COMM_LOST, nothing GOOD, last values kept (not 0) |
+| recover | NORMAL | 45 | DC-008: ONLINE within one probe interval, all GOOD |
+| offline_recover | OFFLINE_THEN_RECOVER:65 | 100 | DC-009: only the status group probed, every 30 s; ONLINE after 65 s; all groups polled at once |
+| bad_crc | BAD_CRC | 30 | DC-011: as DC-008 |
+| recover_crc | NORMAL | 45 | DC-011: back ONLINE |
+| final | NORMAL | 15 | DC-002 end of run; SCH-003 no overlap; stability, routing errors, stack |
+
+DC-003 (4 s / 10 s / 30 s intervals) is measured over the first five answering phases.
+
+### Run on the bench (about 10 minutes)
+
+```powershell
+.\tools\build_firmware.ps1 -Mode Wp5Dc -Port COM11 -Flash
+python tools/wp4/myems_wp4_runner.py --suite dc --console-port COM11 --rs485-port COM12
+```
+
+Evidence: `tools/test_results/wp4_dc_<timestamp>/` (console.log, sim.log,
+phases.json, report.txt). The run is provisional until COM-WP2.4 is closed.
